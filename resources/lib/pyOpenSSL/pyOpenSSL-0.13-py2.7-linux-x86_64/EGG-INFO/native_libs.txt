@@ -1,3 +1,0 @@
-OpenSSL/rand.so
-OpenSSL/SSL.so
-OpenSSL/crypto.so

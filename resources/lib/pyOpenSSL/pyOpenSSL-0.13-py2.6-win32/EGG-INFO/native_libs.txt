@@ -1,5 +1,0 @@
-OpenSSL/crypto.pyd
-OpenSSL/libeay32.dll
-OpenSSL/rand.pyd
-OpenSSL/SSL.pyd
-OpenSSL/ssleay32.dll

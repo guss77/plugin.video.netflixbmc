@@ -22,8 +22,9 @@
         <setting id="sslSetting" type="labelenum" label="30214" values="Auto|SSLv2|SSLv23|SSLv3|TLSv1" default="TLSv1"/>
 
         <setting type="lsep" label="30210" /> <!-- Browser Settings -->
-        <setting id="useChromeProfile" type="bool" label="30212" default="true"/>
-        <setting label="30213" type="action" enable="eq(-1,true)" action="RunPlugin(plugin://plugin.video.netflixbmc/?mode=chromePluginOptions)"/>
+        <setting id="useChromeProfile" type="bool" label="30212" default="false"/>
+        <setting label="30221" type="action" action="RunPlugin(plugin://plugin.video.netflixbmc/?mode=chromePluginInstall)"/>
+        <setting label="30213" type="action" action="RunPlugin(plugin://plugin.video.netflixbmc/?mode=chromePluginOptions)"/>
         <setting id="remoteControl" type="bool" label="30137" default="false"/>
         <setting id="dontUseKiosk" type="bool" label="30133" default="false"/>
 

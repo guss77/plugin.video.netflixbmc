@@ -8,193 +8,73 @@ import time
 import shutil
 import threading
 import subprocess
+
 import xbmc
 import xbmcplugin
 import xbmcgui
 import xbmcaddon
 import xbmcvfs
-from resources.lib import chrome_cookies
+from resources.lib import chrome_cookies, settings, util
 
 trace_on = False
 addon = xbmcaddon.Addon()
 
+
+verify_ssl = False
 if addon.getSetting("sslEnable") == "true":
+# if True:
     try:
-        # Add support for newer SSL connections in requests
-        # Ensure OpenSSL is installed with system package manager on linux
-        import resources
-        sys.path.append(os.path.dirname(resources.lib.__file__))
-        import resources.lib.pyOpenSSL
-        import OpenSSL
-        # https://urllib3.readthedocs.org/en/latest/security.html#openssl-pyopenssl
-        import requests.packages.urllib3.contrib.pyopenssl
-        requests.packages.urllib3.contrib.pyopenssl.inject_into_urllib3()
+        from resources.lib import curl_support as http
         verify_ssl = True
-    except Exception as ex:
+        using_pycurl = True
+    except:
         import traceback
         print traceback.format_exc()
         print "ERROR importing OpenSSL handler"
-        verify_ssl = False
 
-import requests
+        xbmcgui.Dialog().ok('IMPORTANT!', 'human_curl module not working. Please post kodi log to the forum.')
+        addon.setSetting("sslEnable", "false")
+
+if not verify_ssl:
+    from resources.lib import requests_support as http
+
 import HTMLParser
 import urllib
 import socket
-
-if addon.getSetting("sslEnable") == "false":
-    verify_ssl = False
-    print "SSL is Disabled"
-    #supress warnings
-    from requests.packages.urllib3.exceptions import InsecureRequestWarning
-    from requests.packages.urllib3.exceptions import InsecurePlatformWarning
-    requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
-    requests.packages.urllib3.disable_warnings(InsecurePlatformWarning)
-
-try:
-    import cPickle as pickle
-except ImportError:
-    import pickle
+htmlParser = HTMLParser.HTMLParser()
 
 socket.setdefaulttimeout(40)
+
 pluginhandle = int(sys.argv[1])
 
 while (addon.getSetting("username") == "" or addon.getSetting("password") == ""):
     addon.openSettings()
 
-htmlParser = HTMLParser.HTMLParser()
-addonID = addon.getAddonInfo('id')
-osWin = xbmc.getCondVisibility('system.platform.windows')
-osLinux = xbmc.getCondVisibility('system.platform.linux')
-osOSX = xbmc.getCondVisibility('system.platform.osx')
-osAndroid = xbmc.getCondVisibility('system.platform.android')
-addonDir = xbmc.translatePath(addon.getAddonInfo('path'))
-defaultFanart = os.path.join(addonDir ,'fanart.png')
-addonUserDataFolder = xbmc.translatePath("special://profile/addon_data/"+addonID)
-icon = xbmc.translatePath('special://home/addons/'+addonID+'/icon.png')
-utilityPath = xbmc.translatePath('special://home/addons/'+addonID+'/resources/NetfliXBMC_Utility.exe')
-sendKeysPath = xbmc.translatePath('special://home/addons/'+addonID+'/resources/NetfliXBMC_SendKeys.exe')
-fakeVidPath = xbmc.translatePath('special://home/addons/'+addonID+'/resources/fakeVid.mp4')
-downloadScript = xbmc.translatePath('special://home/addons/'+addonID+'/download.py')
-browserScript = xbmc.translatePath('special://home/addons/'+addonID+'/browser.sh')
-searchHistoryFolder = os.path.join(addonUserDataFolder, "history")
-cacheFolder = os.path.join(addonUserDataFolder, "cache")
-cacheFolderCoversTMDB = os.path.join(cacheFolder, "covers")
-cacheFolderFanartTMDB = os.path.join(cacheFolder, "fanart")
-libraryFolder = xbmc.translatePath(addon.getSetting("libraryPath"))
-libraryFolderMovies = os.path.join(libraryFolder, "Movies")
-libraryFolderTV = os.path.join(libraryFolder, "TV")
-cookieFile = xbmc.translatePath("special://profile/addon_data/"+addonID+"/cookies")
-sessionFile = xbmc.translatePath("special://profile/addon_data/"+addonID+"/session")
-chromeUserDataFolder = os.path.join(addonUserDataFolder, "chrome-user-data")
-dontUseKiosk = addon.getSetting("dontUseKiosk") == "true"
-browseTvShows = addon.getSetting("browseTvShows") == "true"
-singleProfile = addon.getSetting("singleProfile") == "true"
-isKidsProfile = addon.getSetting('isKidsProfile') == 'true'
-showProfiles = addon.getSetting("showProfiles") == "true"
-forceView = addon.getSetting("forceView") == "true"
-useUtility = addon.getSetting("useUtility") == "true"
-useChromeProfile = addon.getSetting("useChromeProfile") == "true"
-remoteControl = addon.getSetting("remoteControl") == "true"
-updateDB = addon.getSetting("updateDB") == "true"
-useTMDb = addon.getSetting("useTMDb") == "true"
-username = addon.getSetting("username")
-password = addon.getSetting("password")
-viewIdVideos = addon.getSetting("viewIdVideos")
-viewIdEpisodes = addon.getSetting("viewIdEpisodesNew")
-viewIdActivity = addon.getSetting("viewIdActivity")
-winBrowser = int(addon.getSetting("winBrowserNew"))
-language = addon.getSetting("language")
-auth = addon.getSetting("auth")
-authMyList = addon.getSetting("authMyList")
-linuxUseShellScript = addon.getSetting("linuxUseShellScript") == "true"
-debug = addon.getSetting("debug") == "true"
-
-country = addon.getSetting("country")
-if len(country)==0 and len(language.split("-"))>1:
-    country = language.split("-")[1]
-
-from requests.adapters import HTTPAdapter
-from requests.packages.urllib3.poolmanager import PoolManager
-import ssl
-
-class SSLAdapter(HTTPAdapter):
-    '''An HTTPS Transport Adapter that uses an arbitrary SSL version.'''
-    def init_poolmanager(self, connections, maxsize, block=False):
-        ssl_version = addon.getSetting("sslSetting")
-        ssl_version = None if ssl_version == 'Auto' else ssl_version
-        self.poolmanager = PoolManager(num_pools=connections,
-                                       maxsize=maxsize,
-                                       block=block,
-                                       ssl_version=ssl_version)
-
 urlMain = "https://www.netflix.com"
 session = None
-def newSession():
-    s = requests.Session()
-    s.mount('https://', SSLAdapter())
-    s.headers.update({
-        'User-Agent': 'User-Agent: Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:21.0) Gecko/20130331 Firefox/21.0',
-    })
-    return s
-session = newSession()
 
 def unescape(s):
     return htmlParser.unescape(s)
 
-def load(url, post = None):
-    debug("URL: " + url)
-    r = ""
-    try:
-        if post:
-            r = session.post(url, data=post, verify=verify_ssl).text
-        else:
-            r = session.get(url, verify=verify_ssl).text
-    except AttributeError:
-        xbmc.executebuiltin('XBMC.Notification(NetfliXBMC Error: Cookies have been deleted. Please try again.,10000,'+icon+')')
-        newSession()
-        saveState()
-        if post:
-            r = session.post(url, data=post, verify=verify_ssl).text
-        else:
-            r = session.get(url, verify=verify_ssl).text
-    return r.encode('utf-8')
-
-def saveState():
-    tempfile = sessionFile+".tmp"
-    if xbmcvfs.exists(tempfile):
-        xbmcvfs.delete(tempfile)
-    ser = pickle.dumps(session)
-    fh = xbmcvfs.File(tempfile, 'wb')
-    fh.write(ser)
-    fh.close()
-    if xbmcvfs.exists(sessionFile):
-        xbmcvfs.delete(sessionFile)
-    xbmcvfs.rename(tempfile, sessionFile)
-
 # Load cached data
-if not os.path.isdir(addonUserDataFolder):
-    os.mkdir(addonUserDataFolder)
-if not os.path.isdir(cacheFolder):
-    os.mkdir(cacheFolder)
-if not os.path.isdir(cacheFolderCoversTMDB):
-    os.mkdir(cacheFolderCoversTMDB)
-if not os.path.isdir(cacheFolderFanartTMDB):
-    os.mkdir(cacheFolderFanartTMDB)
-if not os.path.isdir(libraryFolder):
-    xbmcvfs.mkdir(libraryFolder)
-if not os.path.isdir(libraryFolderMovies):
-    xbmcvfs.mkdir(libraryFolderMovies)
-if not os.path.isdir(libraryFolderTV):
-    xbmcvfs.mkdir(libraryFolderTV)
-if os.path.exists(sessionFile):
-    fh = xbmcvfs.File(sessionFile, 'rb')
-    content = fh.read()
-    fh.close()
-    session = pickle.loads(content)
+if not os.path.isdir(settings.addonUserDataFolder):
+    os.mkdir(settings.addonUserDataFolder)
+if not os.path.isdir(settings.cacheFolder):
+    os.mkdir(settings.cacheFolder)
+if not os.path.isdir(settings.cacheFolderCoversTMDB):
+    os.mkdir(settings.cacheFolderCoversTMDB)
+if not os.path.isdir(settings.cacheFolderFanartTMDB):
+    os.mkdir(settings.cacheFolderFanartTMDB)
+if not os.path.isdir(settings.libraryFolder):
+    xbmcvfs.mkdir(settings.libraryFolder)
+if not os.path.isdir(settings.libraryFolderMovies):
+    xbmcvfs.mkdir(settings.libraryFolderMovies)
+if not os.path.isdir(settings.libraryFolderTV):
+    xbmcvfs.mkdir(settings.libraryFolderTV)
+
 
 if not addon.getSetting("html5MessageShown"):
-    dialog = xbmcgui.Dialog()
-    ok = dialog.ok('IMPORTANT!', 'NetfliXBMC >=1.3.0 only supports the new Netflix HTML5 User Interface! The only browsers working with HTML5 DRM playback for now are Chrome>=37 (Win/OSX/Linux) and IExplorer>=11 (Win8.1 only). Make sure you have the latest version installed and check your Netflix settings. Using Silverlight may still partially work, but its not supported anymore. The HTML5 Player is also much faster, supports 1080p and gives you a smoother playback (especially on Linux). See forum.xbmc.org for more info...')
+    ok = xbmcgui.Dialog().ok('IMPORTANT!', 'NetfliXBMC >=1.3.0 only supports the new Netflix HTML5 User Interface! The only browsers working with HTML5 DRM playback for now are Chrome>=37 (Win/OSX/Linux) and IExplorer>=11 (Win8.1 only). Make sure you have the latest version installed and check your Netflix settings. Using Silverlight may still partially work, but its not supported anymore. The HTML5 Player is also much faster, supports 1080p and gives you a smoother playback (especially on Linux). See forum.xbmc.org for more info...')
     addon.setSetting("html5MessageShown", "true")
 
 
@@ -203,7 +83,7 @@ def index():
         addDir(translation(30011), "", 'main', "", "movie")
         addDir(translation(30012), "", 'main', "", "tv")
         addDir(translation(30143), "", 'wiHome', "", "both")
-        if not singleProfile:
+        if not settings.singleProfile:
             profileName = addon.getSetting("profileName")
             addDir(translation(30113) + ' - [COLOR blue]' + profileName + '[/COLOR]', "", 'profileDisplayUpdate', 'DefaultAddonService.png', type, contextEnable=False)
         xbmcplugin.endOfDirectory(pluginhandle)
@@ -211,9 +91,9 @@ def index():
 
 def profileDisplayUpdate():
     menuPath =  xbmc.getInfoLabel('Container.FolderPath')
-    if not showProfiles:
+    if not settings.showProfiles:
         addon.setSetting("profile", None)
-        saveState()
+        http.saveState()
     xbmc.executebuiltin('Container.Update('+menuPath+')')
 
 
@@ -230,17 +110,17 @@ def main(type):
     xbmcplugin.endOfDirectory(pluginhandle)
 
 
-def wiHome(type):
-    content = load(urlMain+"/WiHome")
+def wiHome(dir_type):
+    content = http.get(urlMain+"/WiHome")
     match1 = re.compile('<div class="mrow(.+?)"><div class="hd clearfix"><h3> (.+?)</h3></div><div class="bd clearfix"><div class="slider triangleBtns " id="(.+?)"', re.DOTALL).findall(content)
     match2 = re.compile('class="hd clearfix"><h3><a href="(.+?)">(.+?)<', re.DOTALL).findall(content)
     for temp, title, sliderID in match1:
         if not "hide-completely" in temp:
             title = re.sub('<.(.+?)</.>', '', title)
-            addDir(title.strip(), sliderID, 'listSliderVideos', "", type)
+            addDir(title.strip(), sliderID, 'listSliderVideos', "", dir_type)
     for url, title in match2:
         if "WiAltGenre" in url or "WiSimilarsByViewType" in url or "WiRecentAdditionsGallery" in url:
-            addDir(title.strip(), url, 'listVideos', "", type)
+            addDir(title.strip(), url, 'listVideos', "", dir_type)
     xbmcplugin.endOfDirectory(pluginhandle)
 
 
@@ -250,10 +130,10 @@ def listVideos(url, type, runAsWidget=False):
         pDialog.create('NetfliXBMC', translation(30142)+"...")
         pDialog.update( 0, translation(30142)+"...")
     xbmcplugin.setContent(pluginhandle, "movies")
-    content = load(url)
-    content = load(url) # Terrible... currently first call doesn't have the content, it requires two calls....
+    content = http.get(url)
+    content = http.get(url) # Terrible... currently first call doesn't have the content, it requires two calls....
     if not 'id="page-LOGIN"' in content:
-        if singleProfile and 'id="page-ProfilesGate"' in content:
+        if settings.singleProfile and 'id="page-ProfilesGate"' in content:
             forceChooseProfile()
         else:
             if '<div id="queue"' in content:
@@ -294,12 +174,12 @@ def listVideos(url, type, runAsWidget=False):
                 currentTo = str(int(currentFrom)+49)
                 nextTo = str(int(currentFrom)+99)
                 addDir(translation(30001), url.replace("&from="+currentFrom+"&", "&from="+nextFrom+"&").replace("&to="+currentTo+"&", "&to="+nextTo+"&"), 'listVideos', "", type)
-            if forceView and not runAsWidget:
-                xbmc.executebuiltin('Container.SetViewMode('+viewIdVideos+')')
+            if settings.forceView and not runAsWidget:
+                xbmc.executebuiltin('Container.SetViewMode('+settings.viewIdVideos+')')
         xbmcplugin.endOfDirectory(pluginhandle)
     else:
         deleteCookies()
-        xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,'+str(translation(30127))+',15000,'+icon+')')
+        util.notify('NetfliXBMC: %s'%translation(30127), 15000)
 
 
 def listSliderVideos(sliderID, type, runAsWidget=False):
@@ -308,9 +188,9 @@ def listSliderVideos(sliderID, type, runAsWidget=False):
         pDialog.create('NetfliXBMC', translation(30142)+"...")
         pDialog.update( 0, translation(30142)+"...")
     xbmcplugin.setContent(pluginhandle, "movies")
-    content = load(urlMain+"/WiHome")
+    content = http.get(urlMain+"/WiHome")
     if not 'id="page-LOGIN"' in content:
-        if singleProfile and 'id="page-ProfilesGate"' in content:
+        if settings.singleProfile and 'id="page-ProfilesGate"' in content:
             forceChooseProfile()
         else:
             content = content.replace("\\t","").replace("\\n", "").replace("\\", "")
@@ -334,12 +214,12 @@ def listSliderVideos(sliderID, type, runAsWidget=False):
                             pDialog.update(i*100/(len(match)+10), translation(30142)+"...")
                         listVideo(videoID, "", "", False, False, type)
                         i+=1
-            if forceView and not runAsWidget:
-                xbmc.executebuiltin('Container.SetViewMode('+viewIdVideos+')')
+            if settings.forceView and not runAsWidget:
+                xbmc.executebuiltin('Container.SetViewMode('+settings.viewIdVideos+')')
             xbmcplugin.endOfDirectory(pluginhandle)
     else:
         deleteCookies()
-        xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,'+str(translation(30127))+',15000,'+icon+')')
+        xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,'+str(translation(30127))+',15000,'+settings.icon+')')
 
 
 def listSearchVideos(url, type, runAsWidget=False):
@@ -348,7 +228,7 @@ def listSearchVideos(url, type, runAsWidget=False):
         pDialog.create('NetfliXBMC', translation(30142)+"...")
         pDialog.update( 0, translation(30142)+"...")
     xbmcplugin.setContent(pluginhandle, "movies")
-    content = load(url)
+    content = http.get(url)
     content = json.loads(content)
     i = 1
     if "galleryVideos" in content:
@@ -357,11 +237,11 @@ def listSearchVideos(url, type, runAsWidget=False):
                 pDialog.update(i*100/len(content["galleryVideos"]["items"]), translation(30142)+"...")
             listVideo(str(item["id"]), "", "", False, False, type)
             i+=1
-        if forceView and not runAsWidget:
-            xbmc.executebuiltin('Container.SetViewMode('+viewIdVideos+')')
+        if settings.forceView and not runAsWidget:
+            xbmc.executebuiltin('Container.SetViewMode('+settings.viewIdVideos+')')
         xbmcplugin.endOfDirectory(pluginhandle)
     else:
-        xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,'+str(translation(30146))+',5000,'+icon+')')
+        util.notify('NetfliXBMC:%s'%translation(30146), 5000) 
 
 def clean_filename(n, chars=None):
     if isinstance(n, str):
@@ -401,7 +281,7 @@ def listVideo(videoID, title, thumbUrl, tvshowIsEpisode, hideMovies, type):
         else:
             videoType = "tvshow"
         duration = ""
-    if useTMDb:
+    if settings.useTMDb:
         yearTemp = year
         titleTemp = title
         if " - " in titleTemp:
@@ -410,11 +290,11 @@ def listVideo(videoID, title, thumbUrl, tvshowIsEpisode, hideMovies, type):
             yearTemp = yearTemp.split("-")[0]
         filename = clean_filename(videoID)+".jpg"
         filenameNone = clean_filename(videoID)+".none"
-        coverFile = os.path.join(cacheFolderCoversTMDB, filename)
-        coverFileNone = os.path.join(cacheFolderCoversTMDB, filenameNone)
+        coverFile = os.path.join(settings.cacheFolderCoversTMDB, filename)
+        coverFileNone = os.path.join(settings.cacheFolderCoversTMDB, filenameNone)
         if not os.path.exists(coverFile) and not os.path.exists(coverFileNone):
-            debug("Downloading Cover art. videoType:"+videoTypeTemp+", videoID:" + videoID + ", title:"+titleTemp+", year:"+yearTemp)
-            xbmc.executebuiltin('XBMC.RunScript('+downloadScript+', '+urllib.quote_plus(videoTypeTemp)+', '+urllib.quote_plus(videoID)+', '+urllib.quote_plus(titleTemp)+', '+urllib.quote_plus(yearTemp)+')')
+            util.debug("Downloading Cover art. videoType:"+videoTypeTemp+", videoID:" + videoID + ", title:"+titleTemp+", year:"+yearTemp)
+            xbmc.executebuiltin('XBMC.RunScript('+settings.downloadScript+', '+urllib.quote_plus(videoTypeTemp)+', '+urllib.quote_plus(videoID)+', '+urllib.quote_plus(titleTemp)+', '+urllib.quote_plus(yearTemp)+')')
     match = re.compile('src=".+?">.*?<.*?>(.+?)<', re.DOTALL).findall(videoDetails)
     desc = ""
     if match:
@@ -436,7 +316,7 @@ def listVideo(videoID, title, thumbUrl, tvshowIsEpisode, hideMovies, type):
         rating = match[0]
     title = htmlParser.unescape(title.decode("utf-8"))
     nextMode = "playVideoMain"
-    if browseTvShows and videoType == "tvshow":
+    if settings.browseTvShows and videoType == "tvshow":
         nextMode = "listSeasons"
     added = False
     if "/MyList" in url and videoTypeTemp==type:
@@ -452,15 +332,15 @@ def listVideo(videoID, title, thumbUrl, tvshowIsEpisode, hideMovies, type):
 
 def listGenres(type, videoType):
     xbmcplugin.addSortMethod(pluginhandle, xbmcplugin.SORT_METHOD_LABEL)
-    if isKidsProfile:
+    if settings.isKidsProfile:
         type = 'KidsAltGenre'
-    content = load(urlMain+"/WiHome")
+    content = http.get(urlMain+"/WiHome")
     match = re.compile('/'+type+'\\?agid=(.+?)">(.+?)<', re.DOTALL).findall(content)
     # A number of categories (especially in the Kids genres) have duplicate entires and a lot of whitespice; create a stripped unique set
     unique_match = set((k[0].strip(), k[1].strip()) for k in match)
     for genreID, title in unique_match:
         if not genreID=="83":
-            if isKidsProfile:
+            if settings.isKidsProfile:
                 addDir(title, urlMain+"/"+type+"?agid="+genreID+"&pn=1&np=1&actionMethod=json", 'listVideos', "", videoType)
             else:
                 addDir(title, urlMain+"/"+type+"?agid="+genreID, 'listVideos', "", videoType)
@@ -469,7 +349,7 @@ def listGenres(type, videoType):
 
 def listTvGenres(videoType):
     xbmcplugin.addSortMethod(pluginhandle, xbmcplugin.SORT_METHOD_LABEL)
-    content = load(urlMain+"/WiGenre?agid=83")
+    content = http.get(urlMain+"/WiGenre?agid=83")
     content = content[content.find('id="subGenres_menu"'):]
     content = content[:content.find('</div>')]
     match = re.compile('<li ><a href=".+?/WiGenre\\?agid=(.+?)&.+?"><span>(.+?)<', re.DOTALL).findall(content)
@@ -512,8 +392,8 @@ def listEpisodes(seriesID, season):
                 except:
                     thumb = ""
                 addEpisodeDir(episodeTitle, episodeID, 'playVideoMain', thumb, desc, str(duration), season, episodeNr, seriesID, playcount)
-    if forceView:
-        xbmc.executebuiltin('Container.SetViewMode('+viewIdEpisodes+')')
+    if settings.forceView:
+        xbmc.executebuiltin('Container.SetViewMode('+settings.viewIdEpisodes+')')
     xbmcplugin.endOfDirectory(pluginhandle)
 
 
@@ -523,7 +403,7 @@ def listViewingActivity(type, runAsWidget=False):
         pDialog.create('NetfliXBMC', translation(30142)+"...")
         pDialog.update( 0, translation(30142)+"...")
     xbmcplugin.setContent(pluginhandle, "movies")
-    content = load(urlMain+"/WiViewingActivity")
+    content = http.get(urlMain+"/WiViewingActivity")
     count = 0
     videoIDs = []
     spl = re.compile('(<li .*?data-series=.*?</li>)', re.DOTALL).findall(content)
@@ -555,20 +435,20 @@ def listViewingActivity(type, runAsWidget=False):
                 count += 1
             if count == 40:
                 break
-    if forceView and not runAsWidget:
-        xbmc.executebuiltin('Container.SetViewMode('+viewIdActivity+')')
+    if settings.forceView and not runAsWidget:
+        xbmc.executebuiltin('Container.SetViewMode('+settings.viewIdActivity+')')
     xbmcplugin.endOfDirectory(pluginhandle)
 
 
 def getVideoInfo(videoID):
-    cacheFile = os.path.join(cacheFolder, videoID+".cache")
+    cacheFile = os.path.join(settings.cacheFolder, videoID+".cache")
     content = ""
     if os.path.exists(cacheFile):
         fh = xbmcvfs.File(cacheFile, 'r')
         content = fh.read()
         fh.close()
     if not content:
-        content = load(urlMain+"/JSON/BOB?movieid="+videoID)
+        content = http.get(urlMain+"/JSON/BOB?movieid="+videoID)
         fh = xbmcvfs.File(cacheFile, 'w')
         fh.write(content)
         fh.close()
@@ -576,15 +456,15 @@ def getVideoInfo(videoID):
 
 
 def getSeriesInfo(seriesID):
-    cacheFile = os.path.join(cacheFolder, seriesID+"_episodes.cache")
+    cacheFile = os.path.join(settings.cacheFolder, seriesID+"_episodes.cache")
     content = ""
     if os.path.exists(cacheFile) and (time.time()-os.path.getmtime(cacheFile) < 60*5):
         fh = xbmcvfs.File(cacheFile, 'r')
         content = fh.read()
         fh.close()
     if not content:
-        url = "http://api-global.netflix.com/desktop/odp/episodes?languages="+language+"&forceEpisodes=true&routing=redirect&video="+seriesID+"&country="+country
-        content = load(url)
+        url = "http://api-global.netflix.com/desktop/odp/episodes?settings.languages="+settings.language+"&forceEpisodes=true&routing=redirect&video="+seriesID+"&settings.country="+settings.country
+        content = http.get(url)
         fh = xbmcvfs.File(cacheFile, 'w')
         fh.write(content)
         fh.close()
@@ -599,15 +479,15 @@ def getSeriesInfo(seriesID):
 
 def addMyListToLibrary():
 
-    if not singleProfile:
+    if not settings.singleProfile:
         token = ""
         if addon.getSetting("profile"):
             token = addon.getSetting("profile")
-            load("https://www.netflix.com/SwitchProfile?tkn="+token)
+            http.get("https://www.netflix.com/SwitchProfile?tkn="+token)
 
-    content = load(urlMain+"/MyList?leid=595&link=seeall")
+    content = http.get(urlMain+"/MyList?leid=595&link=seeall")
     if not 'id="page-LOGIN"' in content:
-        if singleProfile and 'id="page-ProfilesGate"' in content:
+        if settings.singleProfile and 'id="page-ProfilesGate"' in content:
             forceChooseProfile()
         else:
             if '<div id="queue"' in content:
@@ -654,11 +534,11 @@ def addMyListToLibrary():
                         addSeriesToLibrary(videoID, title, "", False)
                     except:
                         pass
-            if updateDB:
+            if settings.updateDB:
                 xbmc.executebuiltin('UpdateLibrary(video)')
 
 def playVideo(id):
-    listitem = xbmcgui.ListItem(path=fakeVidPath)
+    listitem = xbmcgui.ListItem(path=settings.fakeVidPath)
     xbmcplugin.setResolvedUrl(pluginhandle, True, listitem)
     playVideoMain(id)
     xbmc.PlayList(xbmc.PLAYLIST_VIDEO).clear()
@@ -666,14 +546,14 @@ def playVideo(id):
 
 def playVideoMain(id):
     xbmc.Player().stop()
-    if singleProfile:
+    if settings.singleProfile:
         url = urlMain+"/WiPlayer?movieid="+id
     else:
         token = ""
         if addon.getSetting("profile"):
             token = addon.getSetting("profile")
         url = "https://www.netflix.com/SwitchProfile?tkn="+token+"&nextpage="+urllib.quote_plus(urlMain+"/WiPlayer?movieid="+id)
-    if osOSX:
+    if settings.osOSX:
         launchChrome(url)
         #xbmc.executebuiltin("RunPlugin(plugin://plugin.program.chrome.launcher/?url="+urllib.quote_plus(url)+"&mode=showSite&kiosk="+kiosk+")")
         try:
@@ -688,14 +568,14 @@ def playVideoMain(id):
             subprocess.Popen('cliclick kp:arrow-up', shell=True)
         except:
             pass
-    elif osAndroid:
+    elif settings.osAndroid:
         xbmc.executebuiltin('XBMC.StartAndroidActivity("","android.intent.action.VIEW","","' + urlMain+'/watch/' + id + '")')
-    elif osLinux:
-        if linuxUseShellScript:
+    elif settings.osLinux:
+        if settings.linuxUseShellScript:
             xbmc.executebuiltin('LIRC.Stop')
             
-            call = '"'+browserScript+'" "'+url+'"';
-            debug("Browser Call: " + call)
+            call = '"'+settings.browserScript+'" "'+url+'"';
+            util.debug("Browser Call: " + call)
             subprocess.call(call, shell=True)
             
             xbmc.executebuiltin('LIRC.Start')
@@ -711,8 +591,8 @@ def playVideoMain(id):
                 subprocess.Popen('xdotool mousemove 9999 9999', shell=True)
             except:
                 pass
-    elif osWin:
-        if winBrowser == 1:
+    elif settings.osWin:
+        if settings.winBrowser == 1:
             path = 'C:\\Program Files\\Internet Explorer\\iexplore.exe'
             path64 = 'C:\\Program Files (x86)\\Internet Explorer\\iexplore.exe'
             if os.path.exists(path):
@@ -722,8 +602,8 @@ def playVideoMain(id):
         else:
             launchChrome(url)
             #xbmc.executebuiltin("RunPlugin(plugin://plugin.program.chrome.launcher/?url="+urllib.quote_plus(url)+"&mode=showSite&kiosk="+kiosk+")")
-        if useUtility:
-            subprocess.Popen('"'+utilityPath+'"', shell=False)
+        if settings.useUtility:
+            subprocess.Popen('"'+settings.utilityPath+'"', shell=False)
 
     myWindow = window('window.xml', addon.getAddonInfo('path'), 'default',)
     myWindow.doModal()
@@ -731,65 +611,69 @@ def playVideoMain(id):
 
 def launchChrome(url):
     kiosk = "yes"
-    if dontUseKiosk:
+    if settings.dontUseKiosk:
         kiosk = "no"
 
     profileFolder = ""
-    if useChromeProfile:
-        if not os.path.exists(chromeUserDataFolder):
+    if settings.useChromeProfile:
+        if not os.path.exists(settings.chromeUserDataFolder):
             import zipfile
-            zip = os.path.join(addonDir, "resources", "chrome-user-data.zip")
+            zip = os.path.join(settings.addonDir, "resources", "chrome-user-data.zip")
             with open(zip, "rb") as zf:
                 z = zipfile.ZipFile(zf)
-                z.extractall(addonUserDataFolder)
-        profileFolder = "&profileFolder="+urllib.quote_plus(chromeUserDataFolder)
+                z.extractall(settings.addonUserDataFolder)
+        profileFolder = "&profileFolder="+urllib.quote_plus(settings.chromeUserDataFolder)
 
         # Inject cookies
-        chrome_cookies.inject_cookies_into_chrome(session, os.path.join(chromeUserDataFolder, "Default", "Cookies"))
+        chrome_cookies.inject_cookies_into_chrome(session, os.path.join(settings.chromeUserDataFolder, "Default", "Cookies"))
 
 
     xbmc.executebuiltin("RunPlugin(plugin://plugin.program.chrome.launcher/?url="+urllib.quote_plus(url)+"&mode=showSite&kiosk="+kiosk+profileFolder+")")
 
 def configureUtility():
-    if osWin:
-        subprocess.Popen('"'+utilityPath+'"'+' config=yes', shell=False)
+    if settings.osWin:
+        subprocess.Popen('"'+settings.utilityPath+'"'+' config=yes', shell=False)
+
+def chromePluginInstall():
+    url = "https://chrome.google.com/webstore/detail/netflix-player-controls/najegmllpphoobggcngjhcpknknljhkj"
+    launchChrome(url)
 
 def chromePluginOptions():
     url = "chrome-extension://najegmllpphoobggcngjhcpknknljhkj/html/options.html"
     launchChrome(url)
 
 def deleteCookies():
-    if os.path.exists(cookieFile):
-        os.remove(cookieFile)
-        xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,Cookies have been deleted!,5000,'+icon+')')
-    if os.path.exists(sessionFile):
-        os.remove(sessionFile)
-        xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,Session cookies have been deleted!,5000,'+icon+')')
+    if os.path.exists(settings.cookieFile):
+        os.remove(settings.cookieFile)
+        xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,Cookies have been deleted!,5000,'+ settings.icon +')')
+    if os.path.exists(settings.sessionFile):
+        os.remove(settings.sessionFile)
+        xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,Session cookies have been deleted!,5000,'+ settings.icon +')')
 
 
 def deleteCache():
-    if os.path.exists(cacheFolder):
+    if os.path.exists(settings.cacheFolder):
         try:
-            shutil.rmtree(cacheFolder)
-            xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,Cache has been deleted!,5000,'+icon+')')
+            shutil.rmtree(settings.cacheFolder)
+            xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,Cache has been deleted!,5000,'+ settings.icon +')')
         except:
             pass
 
 def deleteChromeUserDataFolder():
-    if os.path.exists(chromeUserDataFolder):
+    if os.path.exists(settings.chromeUserDataFolder):
         try:
-            shutil.rmtree(chromeUserDataFolder)
-            xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,Chrome UserData has been deleted!,5000,'+icon+')')
+            shutil.rmtree(settings.chromeUserDataFolder)
+            xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,Chrome UserData has been deleted!,5000,'+ settings.icon +')')
         except:
             pass
 
 def resetAddon():
     dialog = xbmcgui.Dialog()
     if dialog.yesno("NetfliXBMC:", "Really reset the addon?"):
-      if os.path.exists(addonUserDataFolder):
+      if os.path.exists(settings.addonUserDataFolder):
           try:
-              shutil.rmtree(addonUserDataFolder)
-              xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,Addon has been reset!,5000,'+icon+')')
+              shutil.rmtree(settings.addonUserDataFolder)
+              xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,Addon has been reset!,5000,'+ settings.icon +')')
           except:
               pass
 
@@ -798,24 +682,24 @@ def search(type):
     keyboard.doModal()
     if keyboard.isConfirmed() and keyboard.getText():
         search_string = keyboard.getText().replace(" ", "+")
-        listSearchVideos("http://api-global.netflix.com/desktop/search/instantsearch?esn=www&term="+search_string+"&locale="+language+"&country="+country+"&authURL="+auth+"&_retry=0&routing=redirect", type)
+        listSearchVideos("http://api-global.netflix.com/desktop/search/instantsearch?esn=www&term="+search_string+"&locale="+ settings.language +"&settings.country="+ settings.country +"&settings.authURL="+ settings.auth +"&_retry=0&routing=redirect", type)
 
 def addToQueue(id):
-    if authMyList:
-        encodedAuth = urllib.urlencode({'authURL': authMyList})
-        load(urlMain+"/AddToQueue?movieid="+id+"&qtype=INSTANT&"+encodedAuth)
-        xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,'+str(translation(30144))+',3000,'+icon+')')
+    if settings.settings.authMyList:
+        encodedAuth = urllib.urlencode({'settings.authURL': settings.settings.authMyList})
+        http.get(urlMain+"/AddToQueue?movieid="+id+"&qtype=INSTANT&"+encodedAuth)
+        util.notify('NetfliXBMC: %s'%translation(30144), 3000)
     else:
-        debug("Attempted to addToQueue without valid authMyList")
+        util.debug("Attempted to addToQueue without valid settings.authMyList")
 
-def removeFromQueue(id):
-    if authMyList:
-        encodedAuth = urllib.urlencode({'authURL': authMyList})
-        load(urlMain+"/QueueDelete?"+encodedAuth+"&qtype=ED&movieid="+id)
-        xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,'+str(translation(30145))+',3000,'+icon+')')
+def removeFromQueue(show_id):
+    if settings.authMyList:
+        encodedAuth = urllib.urlencode({'settings.authURL': settings.authMyList})
+        http.get(urlMain+"/QueueDelete?"+encodedAuth+"&qtype=ED&movieid="+show_id)
+        util.notify('NetfliXBMC: %s'%translation(30145), 3000)
         xbmc.executebuiltin("Container.Refresh")
     else:
-         debug("Attempted to removeFromQueue without valid authMyList")
+        util.debug("Attempted to removeFromQueue without valid settings.authMyList")
 
 
 def displayLoginProgress(progressWindow, value, message):
@@ -833,47 +717,47 @@ def login():
     displayLoginProgress(loginProgress, 25, str(translation(30217)))
 
     session.cookies.clear()
-    content = load(urlMain+"/Login")
+    content = http.get(urlMain+"/Login")
     match = re.compile('"LOCALE":"(.+?)"', re.DOTALL|re.IGNORECASE).findall(content)
-    if match and not addon.getSetting("language"):
-        addon.setSetting("language", match[0])
-    if not "Sorry, Netflix is not available in your country yet." in content and not "Sorry, Netflix hasn't come to this part of the world yet" in content:
-        match = re.compile('id="signout".+?authURL=(.+?)"', re.DOTALL).findall(content)
+    if match and not addon.getSetting("settings.language"):
+        addon.setSetting("settings.language", match[0])
+    if not "Sorry, Netflix is not available in your settings.country yet." in content and not "Sorry, Netflix hasn't come to this part of the world yet" in content:
+        match = re.compile('id="signout".+?settings.authURL=(.+?)"', re.DOTALL).findall(content)
         if match:
-            addon.setSetting("auth", match[0])
+            addon.setSetting("settings.auth", match[0])
         if 'id="page-LOGIN"' in content:
-            match = re.compile('name="authURL" value="(.+?)"', re.DOTALL).findall(content)
-            authUrl = match[0]
-            addon.setSetting("auth", authUrl)
-            #postdata = "authURL="+urllib.quote_plus(authUrl)+"&email="+urllib.quote_plus(username)+"&password="+urllib.quote_plus(password)+"&RememberMe=on"
-            postdata ={ "authURL":authUrl,
-                        "email":username,
-                        "password":password,
+            match = re.compile('name="settings.authURL" value="(.+?)"', re.DOTALL).findall(content)
+            settings.authUrl = match[0]
+            addon.setSetting("settings.auth", settings.authUrl)
+            #postdata = "settings.authURL="+urllib.quote_plus(settings.authUrl)+"&email="+urllib.quote_plus(username)+"&password="+urllib.quote_plus(password)+"&RememberMe=on"
+            postdata ={ "settings.authURL":settings.authUrl,
+                        "email":settings.username,
+                        "password":settings.password,
                         "RememberMe":"on"
                         }
-            #content = load("https://signup.netflix.com/Login", "authURL="+urllib.quote_plus(authUrl)+"&email="+urllib.quote_plus(username)+"&password="+urllib.quote_plus(password)+"&RememberMe=on")
+            #content = http.get("https://signup.netflix.com/Login", "settings.authURL="+urllib.quote_plus(settings.authUrl)+"&email="+urllib.quote_plus(username)+"&password="+urllib.quote_plus(password)+"&RememberMe=on")
             displayLoginProgress(loginProgress, 50, str(translation(30218)))
-            content = load("https://signup.netflix.com/Login", postdata)
+            content = http.get("https://signup.netflix.com/Login", postdata)
             if 'id="page-LOGIN"' in content:
                 # Login Failed
-                xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,'+str(translation(30127))+',15000,'+icon+')')
+                util.notify('NetfliXBMC: %s'%translation(30127), 15000)
                 return False
             match = re.compile('"LOCALE":"(.+?)"', re.DOTALL|re.IGNORECASE).findall(content)
-            if match and not addon.getSetting("language"):
-                addon.setSetting("language", match[0])
+            if match and not addon.getSetting("settings.language"):
+                addon.setSetting("settings.language", match[0])
             match = re.compile('"COUNTRY":"(.+?)"', re.DOTALL|re.IGNORECASE).findall(content)
             if match:
-                # always overwrite the country code, to cater for switching regions
-                debug("Setting Country: " + match[0])
-                addon.setSetting("country", match[0])
-            saveState()
+                # always overwrite the settings.country code, to cater for switching regions
+                util.debug("Setting Country: " + match[0])
+                addon.setSetting("settings.country", match[0])
+            http.saveState()
             displayLoginProgress(loginProgress, 75, str(translation(30219)))
 
-        if not addon.getSetting("profile") and not singleProfile:
+        if not addon.getSetting("profile") and not settings.singleProfile:
             chooseProfile()
-        elif not singleProfile and showProfiles:
+        elif not settings.singleProfile and settings.showProfiles:
             chooseProfile()
-        elif not singleProfile and not showProfiles:
+        elif not settings.singleProfile and not settings.showProfiles:
             loadProfile()
         else:
             getMyListChangeAuthorisation()
@@ -884,26 +768,22 @@ def login():
             loginProgress.close()
         return True
     else:
-        xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,'+str(translation(30126))+',10000,'+icon+')')
+        util.notify('NetfliXBMC: %s'%translation(30126), 10000)
         if loginProgress:
             loginProgress.close()
         return False
 
-def debug(message):
-    if debug:
-        print message
-
 def loadProfile():
     savedProfile = addon.getSetting("profile")
     if savedProfile:
-        load("https://api-global.netflix.com/desktop/account/profiles/switch?switchProfileGuid="+savedProfile)
-        saveState()
+        http.get("https://api-global.netflix.com/desktop/account/profiles/switch?switchProfileGuid="+savedProfile)
+        http.saveState()
     else:
-        debug("LoadProfile: No stored profile found")
+        util.debug("LoadProfile: No stored profile found")
     getMyListChangeAuthorisation()
 
 def chooseProfile():
-    content = load("https://www.netflix.com/ProfilesGate?nextpage=http%3A%2F%2Fwww.netflix.com%2FDefault")
+    content = http.get("https://www.netflix.com/ProfilesGate?nextpage=http%3A%2F%2Fwww.netflix.com%2FDefault")
     matchType = 0
     match = re.compile('"profileName":"(.+?)".+?token":"(.+?)"', re.DOTALL).findall(content)
     if len(match):
@@ -936,41 +816,41 @@ def chooseProfile():
             selectedProfile = profiles[nr]
         else:
             selectedProfile = profiles[0]
-        load("https://api-global.netflix.com/desktop/account/profiles/switch?switchProfileGuid="+selectedProfile['token'])
+        http.get("https://api-global.netflix.com/desktop/account/profiles/switch?switchProfileGuid="+selectedProfile['token'])
         addon.setSetting("profile", selectedProfile['token'])
         addon.setSetting("isKidsProfile", 'true' if selectedProfile['isKids'] else 'false')
         addon.setSetting("profileName", selectedProfile['name'])
-        saveState()
+        http.saveState()
         getMyListChangeAuthorisation()
     else:
-        debug("Netflixbmc::chooseProfile: No profiles were found")
+        util.debug("Netflixbmc::chooseProfile: No profiles were found")
 
 def getMyListChangeAuthorisation():
-    content = load(urlMain+"/WiHome")
+    content = http.get(urlMain+"/WiHome")
     match = re.compile('"xsrf":"(.+?)"', re.DOTALL).findall(content)
     if match:
-        authMyList = match[0]
-        addon.setSetting("authMyList", match[0])
+        settings.authMyList = match[0]
+        addon.setSetting("settings.authMyList", match[0])
 
 def forceChooseProfile():
     addon.setSetting("singleProfile", "false")
-    xbmc.executebuiltin('XBMC.Notification(NetfliXBMC:,'+str(translation(30111))+',5000,'+icon+')')
+    util.notify('NetfliXBMC: %s'%translation(30111), 5000)
     chooseProfile()
 
 
 def addMovieToLibrary(movieID, title, singleUpdate=True):
     movieFolderName = clean_filename(title+".strm", ' .').strip(' .')
-    dirAndFilename = os.path.join(libraryFolderMovies, movieFolderName)
+    dirAndFilename = os.path.join(settings.libraryFolderMovies, movieFolderName)
     fh = xbmcvfs.File(dirAndFilename, 'w')
     fh.write("plugin://plugin.video.netflixbmc/?mode=playVideo&url="+movieID)
     fh.close()
-    if updateDB and singleUpdate:
+    if settings.updateDB and singleUpdate:
         xbmc.executebuiltin('UpdateLibrary(video)')
 
 
 def addSeriesToLibrary(seriesID, seriesTitle, season, singleUpdate=True):
     seriesFolderName = clean_filename(seriesTitle, ' .')
-    seriesDir = os.path.join(libraryFolderTV, seriesFolderName)
+    seriesDir = os.path.join(settings.libraryFolderTV, seriesFolderName)
     if not os.path.isdir(seriesDir):
         xbmcvfs.mkdir(seriesDir)
     content = getSeriesInfo(seriesID)
@@ -998,13 +878,13 @@ def addSeriesToLibrary(seriesID, seriesTitle, season, singleUpdate=True):
                 fh = xbmcvfs.File(os.path.join(seasonDir, filename), 'w')
                 fh.write("plugin://plugin.video.netflixbmc/?mode=playVideo&url="+episodeID)
                 fh.close()
-    if updateDB and singleUpdate:
+    if settings.updateDB and singleUpdate:
         xbmc.executebuiltin('UpdateLibrary(video)')
 
 
 def playTrailer(title):
     try:
-        content = load("http://gdata.youtube.com/feeds/api/videos?vq="+title.strip().replace(" ", "+")+"+trailer&racy=include&orderby=relevance")
+        content = http.get("http://gdata.youtube.com/feeds/api/videos?vq="+title.strip().replace(" ", "+")+"+trailer&racy=include&orderby=relevance")
         match = re.compile('<id>http://gdata.youtube.com/feeds/api/videos/(.+?)</id>', re.DOTALL).findall(content.split('<entry>')[2])
         xbmc.Player().play("plugin://plugin.video.youtube/play/?video_id=" + match[0])
     except:
@@ -1028,7 +908,7 @@ def parameters_string_to_dict(parameters):
 
 def addDir(name, url, mode, iconimage, type="", contextEnable=True):
     name = htmlParser.unescape(name)
-    u = sys.argv[0]+"?url="+urllib.quote_plus(url)+"&mode="+str(mode)+"&type="+str(type)+"&thumb="+urllib.quote_plus(iconimage)
+    u = sys.argv[0]+"?url="+urllib.quote_plus(url)+"&mode="+str(mode)+"&type="+str(type)+"&thumb="+urllib.quote_plus(settings.iconimage)
     ok = True
 
     liz = xbmcgui.ListItem(name, iconImage="DefaultTVShows.png", thumbnailImage=iconimage)
@@ -1036,7 +916,7 @@ def addDir(name, url, mode, iconimage, type="", contextEnable=True):
     entries = []
     if "/MyList" in url:
         entries.append((translation(30122), 'RunPlugin(plugin://plugin.video.netflixbmc/?mode=addMyListToLibrary)',))
-    liz.setProperty("fanart_image", defaultFanart)
+    liz.setProperty("fanart_image", settings.defaultFanart)
     if contextEnable:
         liz.addContextMenuItems(entries)
     else:
@@ -1051,11 +931,11 @@ def addVideoDir(name, url, mode, iconimage, videoType="", desc="", duration="", 
 ##        duration = str(int(duration) * 60)
     name = name.encode("utf-8")
     filename = clean_filename(url)+".jpg"
-    coverFile = os.path.join(cacheFolderCoversTMDB, filename)
-    fanartFile = os.path.join(cacheFolderFanartTMDB, filename)
+    coverFile = os.path.join(settings.cacheFolderCoversTMDB, filename)
+    fanartFile = os.path.join(settings.cacheFolderFanartTMDB, filename)
     if os.path.exists(coverFile):
-        iconimage = coverFile
-    u = sys.argv[0]+"?url="+urllib.quote_plus(url)+"&mode="+str(mode)+"&name="+urllib.quote_plus(name)+"&thumb="+urllib.quote_plus(iconimage)
+        settings.iconimage = coverFile
+    u = sys.argv[0]+"?url="+urllib.quote_plus(url)+"&mode="+str(mode)+"&name="+urllib.quote_plus(name)+"&thumb="+urllib.quote_plus(settings.iconimage)
     ok = True
     liz = xbmcgui.ListItem(name, iconImage="DefaultTVShows.png", thumbnailImage=iconimage)
     liz.setInfo(type="video", infoLabels={"title": name, "plot": desc, "duration": duration, "year": year, "mpaa": mpaa, "director": director, "genre": genre, "rating": float(rating)})
@@ -1065,10 +945,10 @@ def addVideoDir(name, url, mode, iconimage, videoType="", desc="", duration="", 
         liz.setProperty("fanart_image", coverFile)
     entries = []
     if videoType == "tvshow":
-        if browseTvShows:
-            entries.append((translation(30121), 'Container.Update(plugin://plugin.video.netflixbmc/?mode=playVideoMain&url='+urllib.quote_plus(url)+'&thumb='+urllib.quote_plus(iconimage)+')',))
+        if settings.browseTvShows:
+            entries.append((translation(30121), 'Container.Update(plugin://plugin.video.netflixbmc/?mode=playVideoMain&url='+urllib.quote_plus(url)+'&thumb='+urllib.quote_plus(settings.iconimage)+')',))
         else:
-            entries.append((translation(30118), 'Container.Update(plugin://plugin.video.netflixbmc/?mode=listSeasons&url='+urllib.quote_plus(url)+'&thumb='+urllib.quote_plus(iconimage)+')',))
+            entries.append((translation(30118), 'Container.Update(plugin://plugin.video.netflixbmc/?mode=listSeasons&url='+urllib.quote_plus(url)+'&thumb='+urllib.quote_plus(settings.iconimage)+')',))
     if videoType != "episode":
         entries.append((translation(30134), 'RunPlugin(plugin://plugin.video.netflixbmc/?mode=playTrailer&url='+urllib.quote_plus(name)+')',))
         entries.append((translation(30114), 'RunPlugin(plugin://plugin.video.netflixbmc/?mode=addToQueue&url='+urllib.quote_plus(url)+')',))
@@ -1088,11 +968,11 @@ def addVideoDirR(name, url, mode, iconimage, videoType="", desc="", duration="",
 ##        duration = str(int(duration) * 60)
     name = name.encode("utf-8")
     filename = clean_filename(url)+".jpg"
-    coverFile = os.path.join(cacheFolderCoversTMDB, filename)
-    fanartFile = os.path.join(cacheFolderFanartTMDB, filename)
+    coverFile = os.path.join(settings.cacheFolderCoversTMDB, filename)
+    fanartFile = os.path.join(settings.cacheFolderFanartTMDB, filename)
     if os.path.exists(coverFile):
-        iconimage = coverFile
-    u = sys.argv[0]+"?url="+urllib.quote_plus(url)+"&mode="+str(mode)+"&name="+urllib.quote_plus(name)+"&thumb="+urllib.quote_plus(iconimage)
+        settings.iconimage = coverFile
+    u = sys.argv[0]+"?url="+urllib.quote_plus(url)+"&mode="+str(mode)+"&name="+urllib.quote_plus(name)+"&thumb="+urllib.quote_plus(settings.iconimage)
     ok = True
     liz = xbmcgui.ListItem(name, iconImage="DefaultTVShows.png", thumbnailImage=iconimage)
     liz.setInfo(type="video", infoLabels={"title": name, "plot": desc, "duration": duration, "year": year, "mpaa": mpaa, "director": director, "genre": genre, "rating": float(rating)})
@@ -1102,10 +982,10 @@ def addVideoDirR(name, url, mode, iconimage, videoType="", desc="", duration="",
         liz.setProperty("fanart_image", coverFile)
     entries = []
     if videoType == "tvshow":
-        if browseTvShows:
-            entries.append((translation(30121), 'Container.Update(plugin://plugin.video.netflixbmc/?mode=playVideoMain&url='+urllib.quote_plus(url)+'&thumb='+urllib.quote_plus(iconimage)+')',))
+        if settings.browseTvShows:
+            entries.append((translation(30121), 'Container.Update(plugin://plugin.video.netflixbmc/?mode=playVideoMain&url='+urllib.quote_plus(url)+'&thumb='+urllib.quote_plus(settings.iconimage)+')',))
         else:
-            entries.append((translation(30118), 'Container.Update(plugin://plugin.video.netflixbmc/?mode=listSeasons&url='+urllib.quote_plus(url)+'&thumb='+urllib.quote_plus(iconimage)+')',))
+            entries.append((translation(30118), 'Container.Update(plugin://plugin.video.netflixbmc/?mode=listSeasons&url='+urllib.quote_plus(url)+'&thumb='+urllib.quote_plus(settings.iconimage)+')',))
     entries.append((translation(30134), 'RunPlugin(plugin://plugin.video.netflixbmc/?mode=playTrailer&url='+urllib.quote_plus(name)+')',))
     entries.append((translation(30115), 'RunPlugin(plugin://plugin.video.netflixbmc/?mode=removeFromQueue&url='+urllib.quote_plus(url)+')',))
     entries.append((translation(30140), 'Container.Update(plugin://plugin.video.netflixbmc/?mode=listVideos&url='+urllib.quote_plus(urlMain+"/WiMovie/"+url)+'&type=movie)',))
@@ -1121,8 +1001,8 @@ def addVideoDirR(name, url, mode, iconimage, videoType="", desc="", duration="",
 
 def addSeasonDir(name, url, mode, iconimage, seriesName, seriesID):
     filename = clean_filename(seriesID)+".jpg"
-    fanartFile = os.path.join(cacheFolderFanartTMDB, filename)
-    coverFile = os.path.join(cacheFolderCoversTMDB, filename)
+    fanartFile = os.path.join(settings.cacheFolderFanartTMDB, filename)
+    coverFile = os.path.join(settings.cacheFolderCoversTMDB, filename)
     u = sys.argv[0]+"?url="+urllib.quote_plus(url)+"&mode="+str(mode)+"&seriesID="+urllib.quote_plus(seriesID)
     ok = True
     liz = xbmcgui.ListItem(name, iconImage="DefaultTVShows.png", thumbnailImage=iconimage)
@@ -1142,8 +1022,8 @@ def addEpisodeDir(name, url, mode, iconimage, desc="", duration="", season="", e
 ##    if duration:
 ##        duration = str(int(duration) * 60)
     filename = clean_filename(seriesID)+".jpg"
-    fanartFile = os.path.join(cacheFolderFanartTMDB, filename)
-    coverFile = os.path.join(cacheFolderCoversTMDB, filename)
+    fanartFile = os.path.join(settings.cacheFolderFanartTMDB, filename)
+    coverFile = os.path.join(settings.cacheFolderCoversTMDB, filename)
     u = sys.argv[0]+"?url="+urllib.quote_plus(url)+"&mode="+str(mode)
     ok = True
     liz = xbmcgui.ListItem(name, iconImage="DefaultTVShows.png", thumbnailImage=iconimage)
@@ -1165,24 +1045,24 @@ class window(xbmcgui.WindowXMLDialog):
 
     def _wakeUpThreadProc(self):
         while not self._stopEvent.is_set():
-            if debug:
+            if settings.debug_enabled:
                 print "Netflixbmc: Sending wakeup to main UI to avoid idle/DPMS..."
             xbmc.executebuiltin("playercontrol(wakeup)")
             # bit of a hack above: wakeup is actually not a valid playercontrol argument,
             # but there's no error printed if the argument isn't found and any playercontrol
             # causes the DPMS/idle timeout to reset itself
             self._stopEvent.wait(60)
-        if debug:
+        if settings.debug_enabled:
             print "Netflixbmc: wakeup thread finishing."
 
     def stopWakeupThread(self):
-        if debug:
+        if settings.debug_enabled:
             print "Netflixbmc: stopping wakeup thread"
         self._stopEvent.set()
         self._wakeUpThread.join()
 
     def close(self):
-        if debug:
+        if settings.debug_enabled:
             print "Netflixbmc: closing dummy window"
         self.stopWakeupThread()
         xbmcgui.WindowXMLDialog.close(self)
@@ -1206,37 +1086,37 @@ class window(xbmcgui.WindowXMLDialog):
         ACTION_CONTEXT_MENU = 117
         ACTION_BUILT_IN_FUNCTION = 122
         KEY_BUTTON_BACK = 275
-        if not remoteControl and action != ACTION_BUILT_IN_FUNCTION:
+        if not settings.remoteControl and action != ACTION_BUILT_IN_FUNCTION:
             # if we're not passing remote control actions, any non-autogenerated
             # remote action that reaches here is a signal to close this dummy
             # window as Chrome is gone
-            if debug:
+            if settings.debug_enabled:
                 print "Netflixbmc: Closing dummy window after action %d" % (action.getId())
             self.close()
             return
 
-        if osWin:
+        if settings.osWin:
             proc = subprocess.Popen('WMIC PROCESS get Caption', shell=True, stdout=subprocess.PIPE)
             procAll = ""
             for line in proc.stdout:
                 procAll+=line
             if "chrome.exe" in procAll:
                 if action in [ACTION_SHOW_INFO, ACTION_SHOW_GUI, ACTION_STOP, ACTION_PARENT_DIR, ACTION_PREVIOUS_MENU, KEY_BUTTON_BACK]:
-                    subprocess.Popen('"'+sendKeysPath+'"'+' sendKey=Close', shell=False)
+                    subprocess.Popen('"'+ settings.sendKeysPath +'"'+' sendKey=Close', shell=False)
                     self.close()
                 elif action==ACTION_SELECT_ITEM:
-                    subprocess.Popen('"'+sendKeysPath+'"'+' sendKey=PlayPause', shell=False)
+                    subprocess.Popen('"'+ settings.sendKeysPath +'"'+' sendKey=PlayPause', shell=False)
                 elif action==ACTION_MOVE_LEFT:
-                    subprocess.Popen('"'+sendKeysPath+'"'+' sendKey=SeekLeft', shell=False)
+                    subprocess.Popen('"'+ settings.sendKeysPath +'"'+' sendKey=SeekLeft', shell=False)
                 elif action==ACTION_MOVE_RIGHT:
-                    subprocess.Popen('"'+sendKeysPath+'"'+' sendKey=SeekRight', shell=False)
+                    subprocess.Popen('"'+ settings.sendKeysPath +'"'+' sendKey=SeekRight', shell=False)
                 elif action==ACTION_MOVE_UP:
-                    subprocess.Popen('"'+sendKeysPath+'"'+' sendKey=VolumeUp', shell=False)
+                    subprocess.Popen('"'+ settings.sendKeysPath +'"'+' sendKey=VolumeUp', shell=False)
                 elif action==ACTION_MOVE_DOWN:
-                    subprocess.Popen('"'+sendKeysPath+'"'+' sendKey=VolumeDown', shell=False)
+                    subprocess.Popen('"'+ settings.sendKeysPath +'"'+' sendKey=VolumeDown', shell=False)
             else:
                 self.close()
-        elif osLinux:
+        elif settings.osLinux:
             doClose = False
             key=None
             if action in [ACTION_SHOW_GUI, ACTION_STOP, ACTION_PARENT_DIR, ACTION_PREVIOUS_MENU, KEY_BUTTON_BACK]:
@@ -1258,7 +1138,7 @@ class window(xbmcgui.WindowXMLDialog):
                 key="M"
             elif action==ACTION_CONTEXT_MENU:
                 key="ctrl+alt+shift+d"
-            elif debug:
+            elif settings.debug_enabled:
                 print "Netflixbmc: unmapped key action=%d" % (action.getId())
             if key is not None:
                 p = subprocess.Popen('xdotool search --onlyvisible --class "google-chrome|Chromium" key %s' % key, shell=True)
@@ -1266,9 +1146,9 @@ class window(xbmcgui.WindowXMLDialog):
                 # 0 for success, 127 if xdotool not found in PATH. Return code is 1 if window not found (indicating should close).
                 if not p.returncode in [0,127] or doClose:
                     self.close()
-                if debug:
+                if settings.debug_enabled:
                     print "Netflixbmc: remote action=%d key=%s xdotool result=%d" % (action.getId(), key, p.returncode)
-        elif osOSX:
+        elif settings.osOSX:
             proc = subprocess.Popen('/bin/ps ax', shell=True, stdout=subprocess.PIPE)
             procAll = ""
             for line in proc.stdout:
@@ -1289,7 +1169,7 @@ class window(xbmcgui.WindowXMLDialog):
                     subprocess.Popen('cliclick kp:arrow-down', shell=True)
             else:
                 self.close()
-        elif osAndroid:
+        elif settings.osAndroid:
             pass #I don't know if we can do this on android, We also may not need to as the netflix app should respond to remotes
 
 
@@ -1341,6 +1221,8 @@ elif mode == 'listEpisodes':
     listEpisodes(seriesID, url)
 elif mode == 'configureUtility':
     configureUtility()
+elif mode == 'chromePluginInstall':
+    chromePluginInstall()
 elif mode == 'chromePluginOptions':
     chromePluginOptions()
 elif mode == 'deleteCookies':
