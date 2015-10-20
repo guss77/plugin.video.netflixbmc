@@ -3,7 +3,6 @@
     <requires>
         <import addon="xbmc.python" version="2.1.0"/>
         <import addon="script.module.requests" version="2.4.3"/>
-        <import addon="script.module.human_curl" version="0.1.9"/>
         <import addon="script.module.raven" version="5.7.2"/>
         <import addon="plugin.program.chrome.launcher" version="1.1.2" optional="true"/>
         <import addon="script.module.pydevd" version="2.1.0" optional="true"/>

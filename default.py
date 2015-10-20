@@ -27,35 +27,58 @@ try:
         pydevd.settrace('localhost', port=51380, stdoutToServer=True, stderrToServer=True)
         trace_on = True
 
-addon = xbmcaddon.Addon()
+    addon = xbmcaddon.Addon()
 
 
-verify_ssl = False
-if addon.getSetting("sslEnable") == "true":
-# if True:
-    try:
-        from resources.lib import curl_support as http
-        verify_ssl = True
-        using_pycurl = True
-    except:
-        import traceback
-        print traceback.format_exc()
-        print "ERROR importing OpenSSL handler"
+    verify_ssl = False
+    if addon.getSetting("sslEnable") == "true":
+    # if True:
+        try:
+    # TODO skip this if python 2.7.9 or higher
+            # Add support for newer SSL connections in requests
+            # Ensure OpenSSL is installed with system package manager on linux
+            import resources
+            sys.path.append(os.path.dirname(resources.lib.__file__))
+            import resources.lib.pyOpenSSL
+            import OpenSSL
+            # https://urllib3.readthedocs.org/en/latest/security.html#openssl-pyopenssl
+            import requests.packages.urllib3.contrib.pyopenssl
+            requests.packages.urllib3.contrib.pyopenssl.inject_into_urllib3()
+            verify_ssl = True
+        except Exception as ex:
+            import traceback
+            print traceback.format_exc()
+            print "ERROR importing OpenSSL handler"
+            verify_ssl = False
 
-        xbmcgui.Dialog().ok('IMPORTANT!', 'human_curl module not working. Please post kodi log to the forum.')
-        addon.setSetting("sslEnable", "false")
+            xbmcgui.Dialog().ok('IMPORTANT!', 'pyopenssl module not working. Please post kodi log to the forum.')
+            addon.setSetting("sslEnable", "false")
 
-if not verify_ssl:
-    from resources.lib import requests_support as http
+    import requests
+    # reload(requests)
 
 except:
     util.handle_exception()
     raise
 
 import HTMLParser
+htmlParser = HTMLParser.HTMLParser()
 import urllib
 import socket
-htmlParser = HTMLParser.HTMLParser()
+
+if addon.getSetting("sslEnable") == "false":
+    verify_ssl = False
+    print "SSL is Disabled"
+    #supress warnings
+    from requests.packages.urllib3.exceptions import InsecureRequestWarning
+    from requests.packages.urllib3.exceptions import InsecurePlatformWarning
+    requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+    requests.packages.urllib3.disable_warnings(InsecurePlatformWarning)
+
+try:
+    import cPickle as pickle
+except ImportError:
+    import pickle
 
 socket.setdefaulttimeout(40)
 
@@ -64,11 +87,64 @@ pluginhandle = int(sys.argv[1])
 while (addon.getSetting("username") == "" or addon.getSetting("password") == ""):
     addon.openSettings()
 
+
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.poolmanager import PoolManager
+import ssl
+
+class SSLAdapter(HTTPAdapter):
+    '''An HTTPS Transport Adapter that uses an arbitrary SSL version.'''
+    def init_poolmanager(self, connections, maxsize, block=False):
+        ssl_version = addon.getSetting("sslSetting")
+        ssl_version = None if ssl_version == 'Auto' else ssl_version
+        self.poolmanager = PoolManager(num_pools=connections,
+                                       maxsize=maxsize,
+                                       block=block,
+                                       ssl_version=ssl_version)
+
 urlMain = "https://www.netflix.com"
-session = None
+
+def newSession():
+    s = requests.Session()
+    s.mount('https://', SSLAdapter())
+    s.headers.update({
+        'User-Agent': 'User-Agent: Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:21.0) Gecko/20130331 Firefox/21.0',
+    })
+    return s
+session = newSession()
 
 def unescape(s):
     return htmlParser.unescape(s)
+
+def load(url, post = None):
+    util.debug("URL: " + url)
+    r = ""
+    try:
+        if post:
+            r = session.post(url, data=post, verify=verify_ssl).text
+        else:
+            r = session.get(url, verify=verify_ssl).text
+    except AttributeError:
+        util.notify('NetfliXBMC: Cookies have been deleted. Please try again', 15000)
+        newSession()
+        saveState()
+        if post:
+            r = session.post(url, data=post, verify=verify_ssl).text
+        else:
+            r = session.get(url, verify=verify_ssl).text
+    return r.encode('utf-8')
+
+def saveState():
+    tempfile = settings.sessionFile+".tmp"
+    if xbmcvfs.exists(tempfile):
+        xbmcvfs.delete(tempfile)
+    ser = pickle.dumps(session)
+    fh = xbmcvfs.File(tempfile, 'wb')
+    fh.write(ser)
+    fh.close()
+    if xbmcvfs.exists(settings.sessionFile):
+        xbmcvfs.delete(settings.sessionFile)
+    xbmcvfs.rename(tempfile, settings.sessionFile)
 
 # Load cached data
 if not os.path.isdir(settings.addonUserDataFolder):
@@ -85,7 +161,11 @@ if not os.path.isdir(settings.libraryFolderMovies):
     xbmcvfs.mkdir(settings.libraryFolderMovies)
 if not os.path.isdir(settings.libraryFolderTV):
     xbmcvfs.mkdir(settings.libraryFolderTV)
-
+if os.path.exists(settings.sessionFile):
+    fh = xbmcvfs.File(settings.sessionFile, 'rb')
+    content = fh.read()
+    fh.close()
+    session = pickle.loads(content)
 
 if not addon.getSetting("html5MessageShown"):
     ok = xbmcgui.Dialog().ok('IMPORTANT!', 'NetfliXBMC >=1.3.0 only supports the new Netflix HTML5 User Interface! The only browsers working with HTML5 DRM playback for now are Chrome>=37 (Win/OSX/Linux) and IExplorer>=11 (Win8.1 only). Make sure you have the latest version installed and check your Netflix settings. Using Silverlight may still partially work, but its not supported anymore. The HTML5 Player is also much faster, supports 1080p and gives you a smoother playback (especially on Linux). See forum.xbmc.org for more info...')
@@ -97,9 +177,8 @@ def index():
         addDir(translation(30011), "", 'main', "", "movie")
         addDir(translation(30012), "", 'main', "", "tv")
         addDir(translation(30143), "", 'wiHome', "", "both")
-        if not settings.singleProfile:
-            profileName = addon.getSetting("profileName")
-            addDir(translation(30113) + ' - [COLOR blue]' + profileName + '[/COLOR]', "", 'profileDisplayUpdate', 'DefaultAddonService.png', type, contextEnable=False)
+        profileName = addon.getSetting("profileName")
+        addDir(translation(30113) + ' - [COLOR blue]' + profileName + '[/COLOR]', "", 'profileDisplayUpdate', 'DefaultAddonService.png', type, contextEnable=False)
         xbmcplugin.endOfDirectory(pluginhandle)
 
 
@@ -107,7 +186,7 @@ def profileDisplayUpdate():
     menuPath =  xbmc.getInfoLabel('Container.FolderPath')
     if not settings.showProfiles:
         addon.setSetting("profile", None)
-        http.saveState()
+        saveState()
     xbmc.executebuiltin('Container.Update('+menuPath+')')
 
 
@@ -125,7 +204,7 @@ def main(type):
 
 
 def wiHome(dir_type):
-    content = http.get(urlMain+"/WiHome")
+    content = load(urlMain+"/WiHome")
     match1 = re.compile('<div class="mrow(.+?)"><div class="hd clearfix"><h3> (.+?)</h3></div><div class="bd clearfix"><div class="slider triangleBtns " id="(.+?)"', re.DOTALL).findall(content)
     match2 = re.compile('class="hd clearfix"><h3><a href="(.+?)">(.+?)<', re.DOTALL).findall(content)
     for temp, title, sliderID in match1:
@@ -144,8 +223,8 @@ def listVideos(url, type, runAsWidget=False):
         pDialog.create('NetfliXBMC', translation(30142)+"...")
         pDialog.update( 0, translation(30142)+"...")
     xbmcplugin.setContent(pluginhandle, "movies")
-    content = http.get(url)
-    content = http.get(url) # Terrible... currently first call doesn't have the content, it requires two calls....
+    content = load(url)
+    content = load(url) # Terrible... currently first call doesn't have the content, it requires two calls....
     if not 'id="page-LOGIN"' in content:
         if settings.singleProfile and 'id="page-ProfilesGate"' in content:
             forceChooseProfile()
@@ -202,7 +281,7 @@ def listSliderVideos(sliderID, type, runAsWidget=False):
         pDialog.create('NetfliXBMC', translation(30142)+"...")
         pDialog.update( 0, translation(30142)+"...")
     xbmcplugin.setContent(pluginhandle, "movies")
-    content = http.get(urlMain+"/WiHome")
+    content = load(urlMain+"/WiHome")
     if not 'id="page-LOGIN"' in content:
         if settings.singleProfile and 'id="page-ProfilesGate"' in content:
             forceChooseProfile()
@@ -242,7 +321,7 @@ def listSearchVideos(url, type, runAsWidget=False):
         pDialog.create('NetfliXBMC', translation(30142)+"...")
         pDialog.update( 0, translation(30142)+"...")
     xbmcplugin.setContent(pluginhandle, "movies")
-    content = http.get(url)
+    content = load(url)
     content = json.loads(content)
     i = 1
     if "galleryVideos" in content:
@@ -348,7 +427,7 @@ def listGenres(type, videoType):
     xbmcplugin.addSortMethod(pluginhandle, xbmcplugin.SORT_METHOD_LABEL)
     if settings.isKidsProfile:
         type = 'KidsAltGenre'
-    content = http.get(urlMain+"/WiHome")
+    content = load(urlMain+"/WiHome")
     match = re.compile('/'+type+'\\?agid=(.+?)">(.+?)<', re.DOTALL).findall(content)
     # A number of categories (especially in the Kids genres) have duplicate entires and a lot of whitespice; create a stripped unique set
     unique_match = set((k[0].strip(), k[1].strip()) for k in match)
@@ -363,7 +442,7 @@ def listGenres(type, videoType):
 
 def listTvGenres(videoType):
     xbmcplugin.addSortMethod(pluginhandle, xbmcplugin.SORT_METHOD_LABEL)
-    content = http.get(urlMain+"/WiGenre?agid=83")
+    content = load(urlMain+"/WiGenre?agid=83")
     content = content[content.find('id="subGenres_menu"'):]
     content = content[:content.find('</div>')]
     match = re.compile('<li ><a href=".+?/WiGenre\\?agid=(.+?)&.+?"><span>(.+?)<', re.DOTALL).findall(content)
@@ -417,7 +496,7 @@ def listViewingActivity(type, runAsWidget=False):
         pDialog.create('NetfliXBMC', translation(30142)+"...")
         pDialog.update( 0, translation(30142)+"...")
     xbmcplugin.setContent(pluginhandle, "movies")
-    content = http.get(urlMain+"/WiViewingActivity")
+    content = load(urlMain+"/WiViewingActivity")
     count = 0
     videoIDs = []
     spl = re.compile('(<li .*?data-series=.*?</li>)', re.DOTALL).findall(content)
@@ -462,7 +541,7 @@ def getVideoInfo(videoID):
         content = fh.read()
         fh.close()
     if not content:
-        content = http.get(urlMain+"/JSON/BOB?movieid="+videoID)
+        content = load(urlMain+"/JSON/BOB?movieid="+videoID)
         fh = xbmcvfs.File(cacheFile, 'w')
         fh.write(content)
         fh.close()
@@ -478,7 +557,7 @@ def getSeriesInfo(seriesID):
         fh.close()
     if not content:
         url = "http://api-global.netflix.com/desktop/odp/episodes?settings.languages="+settings.language+"&forceEpisodes=true&routing=redirect&video="+seriesID+"&settings.country="+settings.country
-        content = http.get(url)
+        content = load(url)
         fh = xbmcvfs.File(cacheFile, 'w')
         fh.write(content)
         fh.close()
@@ -497,9 +576,9 @@ def addMyListToLibrary():
         token = ""
         if addon.getSetting("profile"):
             token = addon.getSetting("profile")
-            http.get("https://www.netflix.com/SwitchProfile?tkn="+token)
+            load("https://www.netflix.com/SwitchProfile?tkn="+token)
 
-    content = http.get(urlMain+"/MyList?leid=595&link=seeall")
+    content = load(urlMain+"/MyList?leid=595&link=seeall")
     if not 'id="page-LOGIN"' in content:
         if settings.singleProfile and 'id="page-ProfilesGate"' in content:
             forceChooseProfile()
@@ -701,7 +780,7 @@ def search(type):
 def addToQueue(id):
     if settings.settings.authMyList:
         encodedAuth = urllib.urlencode({'settings.authURL': settings.settings.authMyList})
-        http.get(urlMain+"/AddToQueue?movieid="+id+"&qtype=INSTANT&"+encodedAuth)
+        load(urlMain+"/AddToQueue?movieid="+id+"&qtype=INSTANT&"+encodedAuth)
         util.notify('NetfliXBMC: %s'%translation(30144), 3000)
     else:
         util.debug("Attempted to addToQueue without valid settings.authMyList")
@@ -709,7 +788,7 @@ def addToQueue(id):
 def removeFromQueue(show_id):
     if settings.authMyList:
         encodedAuth = urllib.urlencode({'settings.authURL': settings.authMyList})
-        http.get(urlMain+"/QueueDelete?"+encodedAuth+"&qtype=ED&movieid="+show_id)
+        load(urlMain+"/QueueDelete?"+encodedAuth+"&qtype=ED&movieid="+show_id)
         util.notify('NetfliXBMC: %s'%translation(30145), 3000)
         xbmc.executebuiltin("Container.Refresh")
     else:
@@ -731,7 +810,7 @@ def login():
     displayLoginProgress(loginProgress, 25, str(translation(30217)))
 
     session.cookies.clear()
-    content = http.get(urlMain+"/Login")
+    content = load(urlMain+"/Login")
     match = re.compile('"LOCALE":"(.+?)"', re.DOTALL|re.IGNORECASE).findall(content)
     if match and not addon.getSetting("settings.language"):
         addon.setSetting("settings.language", match[0])
@@ -749,9 +828,9 @@ def login():
                         "password":settings.password,
                         "RememberMe":"on"
                         }
-            #content = http.get("https://signup.netflix.com/Login", "settings.authURL="+urllib.quote_plus(settings.authUrl)+"&email="+urllib.quote_plus(username)+"&password="+urllib.quote_plus(password)+"&RememberMe=on")
+            #content = load("https://signup.netflix.com/Login", "settings.authURL="+urllib.quote_plus(settings.authUrl)+"&email="+urllib.quote_plus(username)+"&password="+urllib.quote_plus(password)+"&RememberMe=on")
             displayLoginProgress(loginProgress, 50, str(translation(30218)))
-            content = http.get("https://signup.netflix.com/Login", postdata)
+            content = load("https://signup.netflix.com/Login", postdata)
             if 'id="page-LOGIN"' in content:
                 # Login Failed
                 util.notify('NetfliXBMC: %s'%translation(30127), 15000)
@@ -764,7 +843,7 @@ def login():
                 # always overwrite the settings.country code, to cater for switching regions
                 util.debug("Setting Country: " + match[0])
                 addon.setSetting("settings.country", match[0])
-            http.saveState()
+            saveState()
             displayLoginProgress(loginProgress, 75, str(translation(30219)))
 
         if not addon.getSetting("profile") and not settings.singleProfile:
@@ -790,14 +869,14 @@ def login():
 def loadProfile():
     savedProfile = addon.getSetting("profile")
     if savedProfile:
-        http.get("https://api-global.netflix.com/desktop/account/profiles/switch?switchProfileGuid="+savedProfile)
-        http.saveState()
+        load("https://api-global.netflix.com/desktop/account/profiles/switch?switchProfileGuid="+savedProfile)
+        saveState()
     else:
         util.debug("LoadProfile: No stored profile found")
     getMyListChangeAuthorisation()
 
 def chooseProfile():
-    content = http.get("https://www.netflix.com/ProfilesGate?nextpage=http%3A%2F%2Fwww.netflix.com%2FDefault")
+    content = load("https://www.netflix.com/ProfilesGate?nextpage=http%3A%2F%2Fwww.netflix.com%2FDefault")
     matchType = 0
     match = re.compile('"profileName":"(.+?)".+?token":"(.+?)"', re.DOTALL).findall(content)
     if len(match):
@@ -830,17 +909,17 @@ def chooseProfile():
             selectedProfile = profiles[nr]
         else:
             selectedProfile = profiles[0]
-        http.get("https://api-global.netflix.com/desktop/account/profiles/switch?switchProfileGuid="+selectedProfile['token'])
+        load("https://api-global.netflix.com/desktop/account/profiles/switch?switchProfileGuid="+selectedProfile['token'])
         addon.setSetting("profile", selectedProfile['token'])
         addon.setSetting("isKidsProfile", 'true' if selectedProfile['isKids'] else 'false')
         addon.setSetting("profileName", selectedProfile['name'])
-        http.saveState()
+        saveState()
         getMyListChangeAuthorisation()
     else:
         util.debug("Netflixbmc::chooseProfile: No profiles were found")
 
 def getMyListChangeAuthorisation():
-    content = http.get(urlMain+"/WiHome")
+    content = load(urlMain+"/WiHome")
     match = re.compile('"xsrf":"(.+?)"', re.DOTALL).findall(content)
     if match:
         settings.authMyList = match[0]
@@ -898,7 +977,7 @@ def addSeriesToLibrary(seriesID, seriesTitle, season, singleUpdate=True):
 
 def playTrailer(title):
     try:
-        content = http.get("http://gdata.youtube.com/feeds/api/videos?vq="+title.strip().replace(" ", "+")+"+trailer&racy=include&orderby=relevance")
+        content = load("http://gdata.youtube.com/feeds/api/videos?vq="+title.strip().replace(" ", "+")+"+trailer&racy=include&orderby=relevance")
         match = re.compile('<id>http://gdata.youtube.com/feeds/api/videos/(.+?)</id>', re.DOTALL).findall(content.split('<entry>')[2])
         xbmc.Player().play("plugin://plugin.video.youtube/play/?video_id=" + match[0])
     except:
@@ -1204,16 +1283,16 @@ try:
         main(type)
     elif mode == 'wiHome':
         wiHome(type)
-    elif mode == "myList":
-        myList(url, type)
-    elif mode == "newArrivals":
-        newArrivals(url, type)
+    # elif mode == "myList":
+    #     myList(url, type)
+    # elif mode == "newArrivals":
+    #     newArrivals(url, type)
     elif mode == "listTvGenres":
-        listTvGenres(url, type)
-    elif mode == "listMovieGenres":
-        listMovieGenres(url, type)
-    elif mode == "listFiltered":
-        listFiltered(url, type)
+        listTvGenres(url)#, type)
+    # elif mode == "listMovieGenres":
+    #     listMovieGenres(url, type)
+    # elif mode == "listFiltered":
+    #     listFiltered(url, type)
     # elif mode == 'listVideos':
     #     listVideos(url, type, runAsWidget)
     elif mode == 'listSliderVideos':
@@ -1234,10 +1313,8 @@ try:
         login()
     elif mode == 'chooseProfile':
         chooseProfile()
-elif mode == 'listGenres':
-    listGenres(url, type)
-    # elif mode == 'listGenres':
-    #     listGenres(url, type)
+    elif mode == 'listGenres':
+        listGenres(url, type)
     elif mode == 'listViewingActivity':
         listViewingActivity(type, runAsWidget)
     elif mode == 'listSeasons':
