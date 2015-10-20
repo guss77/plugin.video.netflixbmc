@@ -16,7 +16,17 @@ import xbmcaddon
 import xbmcvfs
 from resources.lib import chrome_cookies, settings, util
 
-trace_on = False
+try:
+    trace_on = False
+    if True:
+    # if False:
+        pydev_egg="/Applications/PyCharm.app/Contents/debug-eggs/pycharm-debug.egg"
+        if pydev_egg not in sys.path:
+            sys.path.insert(0,pydev_egg)
+        import pydevd
+        pydevd.settrace('localhost', port=51380, stdoutToServer=True, stderrToServer=True)
+        trace_on = True
+
 addon = xbmcaddon.Addon()
 
 
@@ -37,6 +47,10 @@ if addon.getSetting("sslEnable") == "true":
 
 if not verify_ssl:
     from resources.lib import requests_support as http
+
+except:
+    util.handle_exception()
+    raise
 
 import HTMLParser
 import urllib
@@ -1172,80 +1186,93 @@ class window(xbmcgui.WindowXMLDialog):
         elif settings.osAndroid:
             pass #I don't know if we can do this on android, We also may not need to as the netflix app should respond to remotes
 
+try:
 
-params = parameters_string_to_dict(sys.argv[2])
-mode = urllib.unquote_plus(params.get('mode', ''))
-url = urllib.unquote_plus(params.get('url', ''))
-thumb = urllib.unquote_plus(params.get('thumb', ''))
-name = urllib.unquote_plus(params.get('name', ''))
-season = urllib.unquote_plus(params.get('season', ''))
-seriesID = urllib.unquote_plus(params.get('seriesID', ''))
-type = urllib.unquote_plus(params.get('type', ''))
+    params = parameters_string_to_dict(sys.argv[2])
+    mode = urllib.unquote_plus(params.get('mode', ''))
+    url = urllib.unquote_plus(params.get('url', ''))
+    thumb = urllib.unquote_plus(params.get('thumb', ''))
+    name = urllib.unquote_plus(params.get('name', ''))
+    season = urllib.unquote_plus(params.get('season', ''))
+    seriesID = urllib.unquote_plus(params.get('seriesID', ''))
+    type = urllib.unquote_plus(params.get('type', ''))
 
-#if the addon is requested from the homewindow, assume the content is retrieved as widget so disable progress bar and forcedviews
-runAsWidget = urllib.unquote_plus(params.get('widget', '')) == 'true'
+    #if the addon is requested from the homewindow, assume the content is retrieved as widget so disable progress bar and forcedviews
+    runAsWidget = urllib.unquote_plus(params.get('widget', '')) == 'true'
 
-if mode == 'main':
-    main(type)
-elif mode == 'wiHome':
-    wiHome(type)
-elif mode == 'listVideos':
-    listVideos(url, type, runAsWidget)
-elif mode == 'listSliderVideos':
-    listSliderVideos(url, type, runAsWidget)
-elif mode == 'listSearchVideos':
-    listSearchVideos(url, type, runAsWidget)
-elif mode == 'addToQueue':
-    addToQueue(url)
-elif mode == 'removeFromQueue':
-    removeFromQueue(url)
-elif mode == 'playVideo':
-    playVideo(url)
-elif mode == 'playVideoMain':
-    playVideoMain(url)
-elif mode == 'search':
-    search(type)
-elif mode == 'login':
-    login()
-elif mode == 'chooseProfile':
-    chooseProfile()
+    if mode == 'main':
+        main(type)
+    elif mode == 'wiHome':
+        wiHome(type)
+    elif mode == "myList":
+        myList(url, type)
+    elif mode == "newArrivals":
+        newArrivals(url, type)
+    elif mode == "listTvGenres":
+        listTvGenres(url, type)
+    elif mode == "listMovieGenres":
+        listMovieGenres(url, type)
+    elif mode == "listFiltered":
+        listFiltered(url, type)
+    # elif mode == 'listVideos':
+    #     listVideos(url, type, runAsWidget)
+    elif mode == 'listSliderVideos':
+        listSliderVideos(url, type, runAsWidget)
+    elif mode == 'listSearchVideos':
+        listSearchVideos(url, type, runAsWidget)
+    elif mode == 'addToQueue':
+        addToQueue(url)
+    elif mode == 'removeFromQueue':
+        removeFromQueue(url)
+    elif mode == 'playVideo':
+        playVideo(url)
+    elif mode == 'playVideoMain':
+        playVideoMain(url)
+    elif mode == 'search':
+        search(type)
+    elif mode == 'login':
+        login()
+    elif mode == 'chooseProfile':
+        chooseProfile()
 elif mode == 'listGenres':
     listGenres(url, type)
-elif mode == 'listTvGenres':
-    listTvGenres(type)
-elif mode == 'listViewingActivity':
-    listViewingActivity(type, runAsWidget)
-elif mode == 'listSeasons':
-    listSeasons(name, url, thumb)
-elif mode == 'listEpisodes':
-    listEpisodes(seriesID, url)
-elif mode == 'configureUtility':
-    configureUtility()
-elif mode == 'chromePluginInstall':
-    chromePluginInstall()
-elif mode == 'chromePluginOptions':
-    chromePluginOptions()
-elif mode == 'deleteCookies':
-    deleteCookies()
-elif mode == 'deleteCache':
-    deleteCache()
-elif mode == 'deleteChromeUserData':
-    deleteChromeUserDataFolder()
-elif mode == 'resetAddon':
-    resetAddon()
-elif mode == 'playTrailer':
-    playTrailer(url)
-elif mode == 'addMyListToLibrary':
-    addMyListToLibrary()
-elif mode == 'addMovieToLibrary':
-    addMovieToLibrary(url, name)
-elif mode == 'addSeriesToLibrary':
-    addSeriesToLibrary(seriesID, name, url)
-elif mode == 'profileDisplayUpdate':
-    profileDisplayUpdate()
-else:
-    index()
-
-
-if trace_on:
-    pydevd.stoptrace()
+    # elif mode == 'listGenres':
+    #     listGenres(url, type)
+    elif mode == 'listViewingActivity':
+        listViewingActivity(type, runAsWidget)
+    elif mode == 'listSeasons':
+        listSeasons(url, name, thumb)
+    elif mode == 'listEpisodes':
+        listEpisodes(seriesID, url)
+    elif mode == 'configureUtility':
+        configureUtility()
+    elif mode == 'chromePluginInstall':
+        chromePluginInstall()
+    elif mode == 'chromePluginOptions':
+        chromePluginOptions()
+    elif mode == 'deleteCookies':
+        deleteCookies()
+    elif mode == 'deleteCache':
+        deleteCache()
+    elif mode == 'deleteChromeUserData':
+        deleteChromeUserDataFolder()
+    elif mode == 'resetAddon':
+        resetAddon()
+    elif mode == 'playTrailer':
+        playTrailer(url)
+    elif mode == 'addMyListToLibrary':
+        addMyListToLibrary()
+    elif mode == 'addMovieToLibrary':
+        addMovieToLibrary(url, name)
+    elif mode == 'addSeriesToLibrary':
+        addSeriesToLibrary(seriesID, name, url)
+    elif mode == 'profileDisplayUpdate':
+        profileDisplayUpdate()
+    else:
+        index()
+except:
+    util.handle_exception()
+    raise
+finally:
+    if trace_on:
+        pydevd.stoptrace()

@@ -31,7 +31,6 @@ sessionFile = xbmc.translatePath("special://profile/addon_data/"+addonID+"/sessi
 chromeUserDataFolder = os.path.join(addonUserDataFolder, "chrome-user-data")
 dontUseKiosk = addon.getSetting("dontUseKiosk") == "true"
 browseTvShows = addon.getSetting("browseTvShows") == "true"
-singleProfile = addon.getSetting("singleProfile") == "true"
 isKidsProfile = addon.getSetting('isKidsProfile') == 'true'
 showProfiles = addon.getSetting("showProfiles") == "true"
 forceView = addon.getSetting("forceView") == "true"
@@ -51,7 +50,10 @@ auth = addon.getSetting("auth")
 authMyList = addon.getSetting("authMyList")
 linuxUseShellScript = addon.getSetting("linuxUseShellScript") == "true"
 debug_enabled = addon.getSetting("debug") == "true"
+bug_reporting_enabled = addon.getSetting("send_bug_reports") == "true"
 
 country = addon.getSetting("country")
 if len(country)==0 and len(language.split("-"))>1:
     country = language.split("-")[1]
+
+raven_dsn="https://1f1622b3b38d4e62a3d885d53a2ccf61:8a420bff60c84ee5b116b7c75ebf2aeb@sentry.alelec.net/2"
