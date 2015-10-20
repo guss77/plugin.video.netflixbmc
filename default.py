@@ -5,6 +5,7 @@ import sys
 import re
 import json
 import time
+import urllib
 import shutil
 import threading
 import subprocess
@@ -16,6 +17,9 @@ import xbmcaddon
 import xbmcvfs
 from resources.lib import chrome_cookies, settings, util
 
+html = None
+addon = xbmcaddon.Addon()
+
 try:
     trace_on = False
     if True:
@@ -26,10 +30,20 @@ try:
         import pydevd
         pydevd.settrace('localhost', port=51380, stdoutToServer=True, stderrToServer=True)
         trace_on = True
+except:
+    pass
 
-    addon = xbmcaddon.Addon()
+try:
+    from resources.lib import html
+except: pass
+
+import HTMLParser
+htmlParser = HTMLParser.HTMLParser()
+def unescape(s):
+    return htmlParser.unescape(s)
 
 
+if not html:
     verify_ssl = False
     if addon.getSetting("sslEnable") == "true":
     # if True:
@@ -57,94 +71,95 @@ try:
     import requests
     # reload(requests)
 
-except:
-    util.handle_exception()
-    raise
+    import socket
 
-import HTMLParser
-htmlParser = HTMLParser.HTMLParser()
-import urllib
-import socket
+    if addon.getSetting("sslEnable") == "false":
+        verify_ssl = False
+        print "SSL is Disabled"
+        #supress warnings
+        from requests.packages.urllib3.exceptions import InsecureRequestWarning
+        from requests.packages.urllib3.exceptions import InsecurePlatformWarning
+        requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+        requests.packages.urllib3.disable_warnings(InsecurePlatformWarning)
 
-if addon.getSetting("sslEnable") == "false":
-    verify_ssl = False
-    print "SSL is Disabled"
-    #supress warnings
-    from requests.packages.urllib3.exceptions import InsecureRequestWarning
-    from requests.packages.urllib3.exceptions import InsecurePlatformWarning
-    requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
-    requests.packages.urllib3.disable_warnings(InsecurePlatformWarning)
+    try:
+        import cPickle as pickle
+    except ImportError:
+        import pickle
 
-try:
-    import cPickle as pickle
-except ImportError:
-    import pickle
+    socket.setdefaulttimeout(40)
 
-socket.setdefaulttimeout(40)
 
+if html:
+    def load(url, post = None):
+        if post:
+            return html.postContent(url, post)
+        else:
+            return html.getContent(url)
+
+    def saveState():
+        return html.saveState()
+else:
+
+    from requests.adapters import HTTPAdapter
+    from requests.packages.urllib3.poolmanager import PoolManager
+    import ssl
+
+    class SSLAdapter(HTTPAdapter):
+        '''An HTTPS Transport Adapter that uses an arbitrary SSL version.'''
+        def init_poolmanager(self, connections, maxsize, block=False):
+            ssl_version = addon.getSetting("sslSetting")
+            ssl_version = None if ssl_version == 'Auto' else ssl_version
+            self.poolmanager = PoolManager(num_pools=connections,
+                                           maxsize=maxsize,
+                                           block=block,
+                                           ssl_version=ssl_version)
+
+    def newSession():
+        s = requests.Session()
+        s.mount('https://', SSLAdapter())
+        s.headers.update({
+            'User-Agent': 'User-Agent: Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:21.0) Gecko/20130331 Firefox/21.0',
+        })
+        return s
+    session = newSession()
+
+    def load(url, post = None):
+        util.debug("URL: " + url)
+        r = ""
+        try:
+            if post:
+                r = session.post(url, data=post, verify=verify_ssl).text
+            else:
+                r = session.get(url, verify=verify_ssl).text
+        except AttributeError:
+            util.notify('NetfliXBMC: Cookies have been deleted. Please try again', 15000)
+            newSession()
+            saveState()
+            if post:
+                r = session.post(url, data=post, verify=verify_ssl).text
+            else:
+                r = session.get(url, verify=verify_ssl).text
+        return r.encode('utf-8')
+
+    def saveState():
+        tempfile = settings.sessionFile+".tmp"
+        if xbmcvfs.exists(tempfile):
+            xbmcvfs.delete(tempfile)
+        ser = pickle.dumps(session)
+        fh = xbmcvfs.File(tempfile, 'wb')
+        fh.write(ser)
+        fh.close()
+        if xbmcvfs.exists(settings.sessionFile):
+            xbmcvfs.delete(settings.sessionFile)
+        xbmcvfs.rename(tempfile, settings.sessionFile)
+
+
+from resources.lib.netflix import urls
 pluginhandle = int(sys.argv[1])
 
 while (addon.getSetting("username") == "" or addon.getSetting("password") == ""):
     addon.openSettings()
-
-
-from requests.adapters import HTTPAdapter
-from requests.packages.urllib3.poolmanager import PoolManager
-import ssl
-
-class SSLAdapter(HTTPAdapter):
-    '''An HTTPS Transport Adapter that uses an arbitrary SSL version.'''
-    def init_poolmanager(self, connections, maxsize, block=False):
-        ssl_version = addon.getSetting("sslSetting")
-        ssl_version = None if ssl_version == 'Auto' else ssl_version
-        self.poolmanager = PoolManager(num_pools=connections,
-                                       maxsize=maxsize,
-                                       block=block,
-                                       ssl_version=ssl_version)
-
-from resources.lib.netflix import urls
-
-def newSession():
-    s = requests.Session()
-    s.mount('https://', SSLAdapter())
-    s.headers.update({
-        'User-Agent': 'User-Agent: Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:21.0) Gecko/20130331 Firefox/21.0',
-    })
-    return s
-session = newSession()
-
-def unescape(s):
-    return htmlParser.unescape(s)
-
-def load(url, post = None):
-    util.debug("URL: " + url)
-    r = ""
-    try:
-        if post:
-            r = session.post(url, data=post, verify=verify_ssl).text
-        else:
-            r = session.get(url, verify=verify_ssl).text
-    except AttributeError:
-        util.notify('NetfliXBMC: Cookies have been deleted. Please try again', 15000)
-        newSession()
-        saveState()
-        if post:
-            r = session.post(url, data=post, verify=verify_ssl).text
-        else:
-            r = session.get(url, verify=verify_ssl).text
-    return r.encode('utf-8')
-
-def saveState():
-    tempfile = settings.sessionFile+".tmp"
-    if xbmcvfs.exists(tempfile):
-        xbmcvfs.delete(tempfile)
-    ser = pickle.dumps(session)
-    fh = xbmcvfs.File(tempfile, 'wb')
-    fh.write(ser)
-    fh.close()
-    if xbmcvfs.exists(settings.sessionFile):
-        xbmcvfs.delete(settings.sessionFile)
-    xbmcvfs.rename(tempfile, settings.sessionFile)
 
 # Load cached data
 if not os.path.isdir(settings.addonUserDataFolder):
@@ -161,7 +176,8 @@ if not os.path.isdir(settings.libraryFolderMovies):
     xbmcvfs.mkdir(settings.libraryFolderMovies)
 if not os.path.isdir(settings.libraryFolderTV):
     xbmcvfs.mkdir(settings.libraryFolderTV)
-if os.path.exists(settings.sessionFile):
+
+if not html and os.path.exists(settings.sessionFile):
     fh = xbmcvfs.File(settings.sessionFile, 'rb')
     content = fh.read()
     fh.close()
@@ -541,7 +557,7 @@ def getVideoInfo(videoID):
         content = fh.read()
         fh.close()
     if not content:
-        content = load(urls.videoinfo.format(movieid=videoID))
+        content = load(urls.video_info.format(movieid=videoID))
         fh = xbmcvfs.File(cacheFile, 'w')
         fh.write(content)
         fh.close()
@@ -641,7 +657,7 @@ def playVideoMain(id):
     token = ""
     if addon.getSetting("profile"):
         token = addon.getSetting("profile")
-    url = "https://www.netflix.com/SwitchProfile?tkn="+token+"&nextpage="+urllib.quote_plus(urls.videoplay.format(movieid=id))
+    url = "https://www.netflix.com/SwitchProfile?tkn="+token+"&nextpage="+urllib.quote_plus(urls.video_play.format(movieid=id))
 
     if settings.osOSX:
         launchChrome(url)
@@ -715,7 +731,8 @@ def launchChrome(url):
         profileFolder = "&profileFolder="+urllib.quote_plus(settings.chromeUserDataFolder)
 
         # Inject cookies
-        chrome_cookies.inject_cookies_into_chrome(session, os.path.join(settings.chromeUserDataFolder, "Default", "Cookies"))
+        if not html:
+            chrome_cookies.inject_cookies_into_chrome(session, os.path.join(settings.chromeUserDataFolder, "Default", "Cookies"))
 
 
     xbmc.executebuiltin("RunPlugin(plugin://plugin.program.chrome.launcher/?url="+urllib.quote_plus(url)+"&mode=showSite&kiosk="+kiosk+profileFolder+")")
@@ -775,7 +792,7 @@ def search(type):
         listSearchVideos("http://api-global.netflix.com/desktop/search/instantsearch?esn=www&term="+search_string+"&locale="+ settings.language +"&country="+ settings.country +"&authURL="+ settings.auth +"&_retry=0&routing=redirect", type)
 
 def addToQueue(id):
-    if settings.settings.authMyList:
+    if settings.authMyList:
         encodedAuth = urllib.urlencode({'authURL': settings.authMyList})
         load(urls.add_to_queue.format(movieid=id, encodedAuth=encodedAuth))
         util.notify('NetfliXBMC: %s'%translation(30144), 3000)
@@ -806,8 +823,15 @@ def login():
     loginProgress.create('NETFLIXBMC', str(translation(30216)) + '...')
     displayLoginProgress(loginProgress, 25, str(translation(30217)))
 
-    session.cookies.clear()
-    content = load(urls.login)
+    if not html:
+        session.cookies.clear()
+
+    if not html:
+        content = load(urls.login)
+    else:
+        response = html.get(urls.login)
+        content = response.content if response else ""
+
     #match = re.compile('"LOCALE":"(.+?)"', re.DOTALL|re.IGNORECASE).findall(content)
     match = re.findall('"LOCALE": *"(.+?)"', content, re.DOTALL|re.IGNORECASE)
     if match and not settings.language:
@@ -818,17 +842,27 @@ def login():
             addon.setSetting("auth", match[0])
         if 'id="page-LOGIN"' in content:
             match = re.compile('name="authURL" value="(.+?)"', re.DOTALL).findall(content)
-            authUrl = settings.authUrl = match[0]
+            authUrl = settings.auth = match[0]
             addon.setSetting("auth", authUrl)
-            #postdata = "authURL="+urllib.quote_plus(settings.authUrl)+"&email="+urllib.quote_plus(username)+"&password="+urllib.quote_plus(password)+"&RememberMe=on"
-            postdata ={ "authURL":settings.authUrl,
+            #postdata = "authURL="+urllib.quote_plus(settings.auth)+"&email="+urllib.quote_plus(username)+"&password="+urllib.quote_plus(password)+"&RememberMe=on"
+            postdata ={ "authURL":settings.auth,
                         "email":settings.username,
                         "password":settings.password,
                         "RememberMe":"on"
                         }
-            #content = load("https://signup.netflix.com/Login", "authURL="+urllib.quote_plus(settings.authUrl)+"&email="+urllib.quote_plus(username)+"&password="+urllib.quote_plus(password)+"&RememberMe=on")
+            #content = load("https://signup.netflix.com/Login", "authURL="+urllib.quote_plus(settings.auth)+"&email="+urllib.quote_plus(username)+"&password="+urllib.quote_plus(password)+"&RememberMe=on")
             displayLoginProgress(loginProgress, 50, str(translation(30218)))
-            content = load("https://signup.netflix.com/Login", postdata)
+            if not html:
+                content = load("https://signup.netflix.com/Login", postdata)
+            else:
+                url = response.url
+                url = "https://signup.netflix.com/Login"
+                response = html.post(url, postdata, allow_redirects=False, expected_status=[200,302])
+                content = response.content
+                headers = response.headers
+                if response.status_code == 302:
+                    content = html.getContent(response.headers['Location'], headers=headers)
+            
             if 'id="page-LOGIN"' in content:
                 # Login Failed
                 util.notify('NetfliXBMC: %s'%translation(30127), 15000)
@@ -842,7 +876,10 @@ def login():
                 # always overwrite the country code, to cater for switching regions
                 util.debug("Setting Country: " + match[0])
                 addon.setSetting("country", match[0])
-            saveState()
+            if html:
+                html.saveState()
+            else:
+                saveState()
             displayLoginProgress(loginProgress, 75, str(translation(30219)))
 
         if not addon.getSetting("profile"):
@@ -1341,7 +1378,7 @@ try:
     else:
         index()
 except:
-    util.handle_exception()
+    # util.handle_exception()
     raise
 finally:
     if trace_on:

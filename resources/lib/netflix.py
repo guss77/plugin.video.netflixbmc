@@ -5,7 +5,8 @@ class urls:
 
     home              = netflix+"/WiHome"
     login             = netflix+"/Login"
-    mylist            = netflix+"/MyList?leid=595&link=seeall"
+    # mylist            = netflix+"/MyList?leid=595&link=seeall"
+    mylist            = netflix+"browse/my-list"
     recent            = netflix+"/WiRecentAdditionsGallery?nRR=releaseDate&nRT=all&pn=1&np=1&actionMethod=json"
     genre             = netflix+"/WiGenre?agid={agid}"
     activity          = netflix+"/WiViewingActivity"

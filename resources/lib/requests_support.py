@@ -51,30 +51,35 @@ def newSession():
     })
     return s
 
-def post(url, data, json=False):
+def post(url, data, allow_redirects=True, expected_status=None, headers=None):
+    global session
+    if not expected_status:
+        expected_status = [200]
     util.debug("URL: " + url)
 
-    response = session.post(url, data=data, verify=verify_ssl)
+    response = session.post(url, data=data, verify=verify_ssl, allow_redirects=allow_redirects,
+                               headers=headers)
 
-    if response.status_code != 200:
+    if response.status_code not in expected_status:
         util.debug("Error %s: %s" % (response.status_code, url))
         util.dialog("Error %s: %s" % (response.status_code, url))
     else:
-        return response.json if json else response.content
+        return response
 
-
-
-def get(url, json=False):
+def get(url, allow_redirects=True, expected_status=None, headers=None):
+    global session
+    if not expected_status:
+        expected_status = [200]
     util.debug("URL: " + url)
 
-    response = session.get(url, verify=verify_ssl).text
+    response = session.get(url, verify=verify_ssl, allow_redirects=allow_redirects,
+                               headers=headers)
 
-    if response.status_code != 200:
+    if response.status_code not in expected_status:
         util.debug("Error %s: %s" % (response.status_code, url))
         util.dialog("Error %s: %s" % (response.status_code, url))
     else:
-        return response.json if json else response.content
-
+        return response
 
 def saveState():
     global session
@@ -92,11 +97,16 @@ def saveState():
 
 ## Create session object for reuse
 
-if os.path.exists(settings.sessionFile):
-    fh = xbmcvfs.File(settings.sessionFile, 'rb')
-    content = fh.read()
-    fh.close()
-    session = pickle.loads(content)
-else:
+session = None
+try:
+    if os.path.exists(settings.sessionFile):
+        fh = xbmcvfs.File(settings.sessionFile, 'rb')
+        content = fh.read()
+        fh.close()
+        session = pickle.loads(content)
+except:
+    pass
+
+if not session:
     session = newSession()
 
