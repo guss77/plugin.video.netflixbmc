@@ -9,6 +9,7 @@ import urllib
 import shutil
 import threading
 import subprocess
+from lxml import html as html_parse
 
 import xbmc
 import xbmcplugin
@@ -16,6 +17,10 @@ import xbmcgui
 import xbmcaddon
 import xbmcvfs
 from resources.lib import chrome_cookies, settings, util
+
+# because the world is Unicode and Python needs to get a clue:
+reload(sys)  # Reenable setdefaultencoding
+sys.setdefaultencoding('UTF8') # we are not in ASCII-land anymore
 
 html = None
 addon = xbmcaddon.Addon()
@@ -359,22 +364,21 @@ def clean_filename(n, chars=None):
         return (''.join(c for c in n if c not in '/\\:?"*|<>')).strip(chars)
 
 def listVideo(videoID, title, thumbUrl, tvshowIsEpisode, hideMovies, type):
-    videoDetails = getVideoInfo(videoID)
-    match = re.compile('<span class="title.*?>(.+?)<', re.DOTALL).findall(videoDetails)
+    videoDetails = html_parse.fromstring(getVideoInfo(videoID))
     if not title:
-        title = match[0].strip()
+        title = videoDetails.xpath('//*[contains(@class,"spotlight-name")]/text()')[0]
     year = ""
-    match = re.compile('<span class="year.*?>(.+?)<', re.DOTALL).findall(videoDetails)
+    match = videoDetails.xpath('//*[contains(@class,"spotlight-year")]/text()')
     if match:
         year = match[0]
     if not thumbUrl:
-        match = re.compile('src="(.+?)"', re.DOTALL).findall(videoDetails)
+        match = videoDetails.xpath('//*[contains(@class,"spotlight-still")]/@src')
         thumbUrl = match[0].replace("/webp/","/images/").replace(".webp",".jpg")
-    match = re.compile('<span class="mpaaRating.*?>(.+?)<', re.DOTALL).findall(videoDetails)
+    match = videoDetails.xpath('//*[contains(@class,"spotlight-maturity")]/text()')
     mpaa = ""
     if match:
         mpaa = match[0].strip()
-    match = re.compile('<span class="duration.*?>(.+?)<', re.DOTALL).findall(videoDetails)
+    match = videoDetails.xpath('//*[contains(@class,"spotlight-duration")]/text()')
     duration = ""
     if match:
         duration = match[0].lower()
@@ -404,23 +408,23 @@ def listVideo(videoID, title, thumbUrl, tvshowIsEpisode, hideMovies, type):
         if not os.path.exists(coverFile) and not os.path.exists(coverFileNone):
             util.debug("Downloading Cover art. videoType:"+videoTypeTemp+", videoID:" + videoID + ", title:"+titleTemp+", year:"+yearTemp)
             xbmc.executebuiltin('XBMC.RunScript('+settings.downloadScript+', '+urllib.quote_plus(videoTypeTemp)+', '+urllib.quote_plus(videoID)+', '+urllib.quote_plus(titleTemp)+', '+urllib.quote_plus(yearTemp)+')')
-    match = re.compile('src=".+?">.*?<.*?>(.+?)<', re.DOTALL).findall(videoDetails)
+    match = videoDetails.xpath('//*[contains(@class,"spotlight-description")]/text()')
     desc = ""
     if match:
         descTemp = match[0].decode("utf-8", 'ignore')
         #replace all embedded unicode in unicode (Norwegian problem)
         descTemp = descTemp.replace('u2013', u'\u2013').replace('u2026', u'\u2026')
         desc = htmlParser.unescape(descTemp)
-    match = re.compile('Director:</dt><dd>(.+?)<', re.DOTALL).findall(videoDetails)
+    match = videoDetails.xpath('//*[contains(@class,"person-section")]/*[text()="Directors"]/following-sibling::*//a/text()')
     director = ""
     if match:
         director = match[0].strip()
-    match = re.compile('<span class="genre.*?>(.+?)<', re.DOTALL).findall(videoDetails)
+    match = videoDetails.xpath('//*[contains(@class,"genre-section")]//li//text()')
     genre = ""
     if match:
-        genre = match[0]
-    match = re.compile('<span class="rating">(.+?)<', re.DOTALL).findall(videoDetails)
-    rating = ""
+        genre = max(match, key=len)
+    match = [] # TODO: figure out how to read the rating for a show (didn't see it anywhere)
+    rating = "0"
     if match:
         rating = match[0]
     title = htmlParser.unescape(title.decode("utf-8"))
@@ -552,6 +556,7 @@ def listViewingActivity(type, runAsWidget=False):
 def getVideoInfo(videoID):
     cacheFile = os.path.join(settings.cacheFolder, videoID+".cache")
     content = ""
+    xbmc.log("getVideoInfo ({}) cached in {}".format(videoID, cacheFile))
     if os.path.exists(cacheFile):
         fh = xbmcvfs.File(cacheFile, 'r')
         content = fh.read()
